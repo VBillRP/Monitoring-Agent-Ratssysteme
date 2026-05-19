@@ -1,1 +1,815 @@
 
+"""
+═══════════════════════════════════════════════════════════════
+ SCRAPER — Browser Automation for City Council Websites
+═══════════════════════════════════════════════════════════════
+ Uses Playwright (a headless browser) to:
+   1. Visit each city's search page
+   2. Fill in keywords and dates
+   3. Click search
+   4. Collect the results
+
+ Each city TYPE has its own handler function because the
+ websites have different layouts and interaction flows.
+═══════════════════════════════════════════════════════════════
+"""
+
+import asyncio
+import logging
+from datetime import datetime
+from urllib.parse import urljoin
+from playwright.async_api import async_playwright, Page
+
+from config import KEYWORDS, TODAY_DE, TODAY_ISO
+
+logger = logging.getLogger("council-monitor.scraper")
+
+# ─── Timing settings ─────────────────────────────────────
+DELAY_BETWEEN_CITIES = 3       # Seconds to wait between cities
+DELAY_BETWEEN_KEYWORDS = 1.5   # Seconds between individual keyword searches
+PAGE_SETTLE_MS = 2000          # Milliseconds to let a page finish loading
+PAGE_TIMEOUT_MS = 30000        # Max milliseconds before giving up on a page
+
+
+# ═══════════════════════════════════════════════════════════
+#                    MAIN ENTRY POINT
+# ═══════════════════════════════════════════════════════════
+
+async def run_all_scrapers(cities: list, debug: bool = False) -> list:
+    """
+    Scrape all configured cities. Returns a list of dicts:
+    [
+      {
+        "city": "Bielefeld",
+        "url": "https://...",
+        "results": [{"title": "...", "url": "..."}, ...],
+        "error": None or "error message",
+        "timestamp": "2026-05-06T09:00:00"
+      },
+      ...
+    ]
+    """
+    all_results = []
+
+    async with async_playwright() as pw:
+        # Launch a headless (invisible) Chrome browser
+        browser = await pw.chromium.launch(headless=True)
+
+        # Create a browser context that looks like a normal German user
+        context = await browser.new_context(
+            locale="de-DE",
+            timezone_id="Europe/Berlin",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+
+        for city in cities:
+            logger.info(f"  🔍 {city['name']}...")
+            page = await context.new_page()
+            page.set_default_timeout(PAGE_TIMEOUT_MS)
+
+            try:
+                # Pick the right scraper function for this city type
+                handler = _SCRAPER_MAP[city["type"]]
+                results = await handler(page, city, debug)
+
+                all_results.append({
+                    "city": city["name"],
+                    "url": city["url"],
+                    "results": results,
+                    "error": None,
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+                count = len(results)
+                logger.info(f"     → {count} result(s)" if count else "     → Empty")
+
+            except Exception as e:
+                logger.error(f"     ✗ ERROR: {e}")
+
+                # Save a screenshot so you can see what went wrong
+                if debug:
+                    try:
+                        safe_name = city["name"].replace(" ", "_").replace("ü", "ue").replace("ö", "oe").replace("ä", "ae")
+                        await page.screenshot(
+                            path=f"debug_{safe_name}_error.png",
+                            full_page=True,
+                        )
+                    except:
+                        pass
+
+                all_results.append({
+                    "city": city["name"],
+                    "url": city["url"],
+                    "results": [],
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+            finally:
+                await page.close()
+                await asyncio.sleep(DELAY_BETWEEN_CITIES)
+
+        await browser.close()
+
+    return all_results
+
+
+# ═══════════════════════════════════════════════════════════
+#                    HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
+async def _dismiss_cookies(page: Page):
+    """
+    Many German sites show a GDPR cookie banner.
+    This tries to click "Accept" so we can access the actual page.
+    """
+    accept_texts = [
+        "Alle akzeptieren", "Akzeptieren", "Zustimmen",
+        "Alle annehmen", "OK", "Verstanden", "Accept",
+    ]
+    for text in accept_texts:
+        try:
+            btn = page.get_by_role("button", name=text)
+            if await btn.is_visible(timeout=1500):
+                await btn.click()
+                await page.wait_for_timeout(500)
+                return
+        except:
+            continue
+
+
+async def _try_fill(page: Page, selectors: list, value: str) -> bool:
+    """
+    Try a list of CSS selectors one by one until one works,
+    then fill it with the given value.
+    Returns True if successful, False if none worked.
+    """
+    for sel in selectors:
+        try:
+            elem = page.locator(sel).first
+            if await elem.is_visible(timeout=1500):
+                await elem.clear()
+                await elem.fill(value)
+                return True
+        except:
+            continue
+    return False
+
+
+async def _try_click(page: Page, selectors: list) -> bool:
+    """
+    Try a list of CSS selectors one by one until one works,
+    then click it. Returns True if successful.
+    """
+    for sel in selectors:
+        try:
+            elem = page.locator(sel).first
+            if await elem.is_visible(timeout=1500):
+                await elem.click()
+                return True
+        except:
+            continue
+    return False
+
+
+async def _extract_results(page: Page, base_url: str) -> list:
+    """
+    Generic result extractor for SessionNet / AllRIS pages.
+
+    These systems typically show results as:
+      • A table with rows, each containing a link
+      • Or a list of links in a results area
+
+    This function tries multiple strategies to find result links.
+    """
+    results = []
+
+    # ── Check if the page says "no results found" ──
+    try:
+        body_text = await page.inner_text("body")
+    except:
+        return []
+
+    no_result_phrases = [
+        "keine ergebnisse", "keine treffer", "es wurden keine",
+        "0 ergebnisse", "0 treffer", "nichts gefunden",
+        "kein ergebnis", "no results",
+    ]
+    body_lower = body_text.lower()
+    for phrase in no_result_phrases:
+        if phrase in body_lower:
+            return []
+
+    # ── Try to find result links using various CSS strategies ──
+    # These are ordered from most specific to least specific.
+    link_strategies = [
+        # SessionNet-specific selectors
+        'table.smccontenttable a[href]',
+        'table.smclisttable a[href]',
+        '.smclistbody a[href]',
+        '#smcresult a[href]',
+        # AllRIS-specific selectors
+        'table.tl1 a[href]',
+        'table.tk1 a[href]',
+        '#applicationcontent a[href]',
+        # Common document link patterns
+        'table a[href*="vo020"]',
+        'table a[href*="to020"]',
+        'table a[href*="si010"]',
+        'table a[href*="vo0050"]',
+        # Generic result containers
+        '.resultlist a[href]',
+        '.search-results a[href]',
+        'ul.results a[href]',
+        # Last resort: any link in the main content area
+        '#main a[href]',
+        '#content a[href]',
+        'table a[href]',
+    ]
+
+    for strategy in link_strategies:
+        try:
+            links = await page.locator(strategy).all()
+            if not links:
+                continue
+
+            for link in links:
+                try:
+                    text = (await link.inner_text()).strip()
+                    href = await link.get_attribute("href")
+
+                    # Skip empty, very short, or navigation links
+                    if not text or not href or len(text) < 5:
+                        continue
+                    if href == "#" or href.startswith("javascript:"):
+                        continue
+                    # Skip common navigation links
+                    skip_words = ["impressum", "datenschutz", "kontakt", "sitemap",
+                                  "login", "anmelden", "startseite", "home"]
+                    if any(w in text.lower() for w in skip_words):
+                        continue
+
+                    # Make the URL absolute
+                    full_url = href if href.startswith("http") else urljoin(base_url, href)
+                    results.append({"title": text, "url": full_url})
+
+                except:
+                    continue
+
+            if results:
+                break  # Found results with this strategy, stop trying
+
+        except:
+            continue
+
+    # ── Remove duplicates (same URL) ──
+    seen_urls = set()
+    unique = []
+    for r in results:
+        if r["url"] not in seen_urls:
+            seen_urls.add(r["url"])
+            unique.append(r)
+
+    return unique
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 1: STANDARD
+#  Cities: Bielefeld, Dortmund, Münster, Nuremberg, Leipzig,
+#          Mainz, Mannheim, Mönchengladbach, Ludwigshafen,
+#          Heidelberg, Cologne
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
+    """
+    Standard process (majority of cities):
+    1. Go to search page
+    2. Enter all keywords (space-separated) into "Suchwort" field
+    3. Select "ODER" (OR) radio button
+    4. Set "Freigabe von" = today
+    5. Set "bis" = today
+    6. Click Search
+    7. Collect results
+    """
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # All keywords as a single space-separated string
+    keywords_str = " ".join(KEYWORDS)
+
+    # ── Step 2: Enter keywords ──
+    filled = await _try_fill(page, [
+        'input[name="smcsuchwoerter"]',        # SessionNet standard
+        'textarea[name="smcsuchwoerter"]',      # Some use textarea
+        '#smcsuchwoerter',                      # By ID
+        'input[name*="uchwoerter" i]',          # Partial match
+        'textarea[name*="uchwoerter" i]',
+        'input[name*="volltext" i]',            # AllRIS variant
+        'textarea[name*="volltext" i]',
+        'input[name*="suchbegriff" i]',         # Another variant
+    ], keywords_str)
+
+    if not filled:
+        # Fallback: find input by its visible label text
+        try:
+            field = page.get_by_label("Suchwort", exact=False).first
+            await field.fill(keywords_str)
+            filled = True
+        except:
+            pass
+
+    if not filled:
+        raise Exception("Could not find the keyword search field (Suchwort)")
+
+    # ── Step 3: Select "ODER" (OR search) ──
+    # Try clicking the ODER radio button
+    oder_clicked = await _try_click(page, [
+        'input[type="radio"][value="ODER"]',
+        'input[type="radio"][value="oder"]',
+        'input[type="radio"][value="or"]',
+        '#smcverknuepfungoder',
+        'input[name="smcverknuepfung"][value="oder" i]',
+    ])
+    if not oder_clicked:
+        # Try using the label
+        try:
+            await page.get_by_label("ODER", exact=True).check()
+        except:
+            try:
+                await page.locator('label:has-text("ODER")').click()
+            except:
+                logger.warning(f"  Could not select ODER for {city['name']} — proceeding anyway")
+
+    # ── Steps 4 & 5: Set date fields ──
+    await _try_fill(page, [
+        'input[name="smcfreigabevon"]',
+        'input[name*="freigabevon" i]',
+        '#smcfreigabevon',
+        'input[name*="datumvon" i]',
+        'input[name*="von" i][size]',
+    ], TODAY_DE)
+
+    await _try_fill(page, [
+        'input[name="smcfreigabebis"]',
+        'input[name*="freigabebis" i]',
+        '#smcfreigabebis',
+        'input[name*="datumbis" i]',
+        'input[name*="bis" i][size]',
+    ], TODAY_DE)
+
+    if debug:
+        safe = city["name"].replace(" ", "_")
+        await page.screenshot(path=f"debug_{safe}_pre_search.png", full_page=True)
+
+    # ── Step 6: Click Search button ──
+    clicked = await _try_click(page, [
+        'input[type="submit"][value*="uch" i]',    # "Suchen" or "suchen"
+        'button[type="submit"]:has-text("uch")',
+        'input[name*="submit" i][value*="uch" i]',
+        'input[name="smcsubmitrecherche"]',
+        'input[type="submit"]',
+        'button[type="submit"]',
+    ])
+
+    if not clicked:
+        raise Exception("Could not find the Search button")
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+    if debug:
+        safe = city["name"].replace(" ", "_")
+        await page.screenshot(path=f"debug_{safe}_results.png", full_page=True)
+
+    # ── Step 7: Extract results ──
+    return await _extract_results(page, city["url"])
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 2: INDIVIDUAL KEYWORDS
+#  Cities: Berlin, Munich
+#  Keywords cannot be searched in bulk — each keyword
+#  requires a separate search.
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
+    """Search each keyword individually and merge all results."""
+    all_results = []
+
+    for i, keyword in enumerate(KEYWORDS):
+        logger.info(f"       Keyword {i+1}/{len(KEYWORDS)}: {keyword}")
+
+        try:
+            if city["name"] == "Munich":
+                # Munich embeds date parameters in the URL itself
+                url = (
+                    f"https://risi.muenchen.de/risi/suche?3"
+                    f"&von={TODAY_ISO}&bis={TODAY_ISO}"
+                    f"&bereich=Vorgang"
+                    f"&objekt=1&objekt=2&objekt=51&objekt=52&objekt=53"
+                )
+                await page.goto(url, wait_until="domcontentloaded")
+                await page.wait_for_timeout(PAGE_SETTLE_MS)
+                await _dismiss_cookies(page)
+
+                filled = await _try_fill(page, [
+                    'input[name*="such" i]',
+                    'input[type="search"]',
+                    '#searchInput',
+                    'input[type="text"]',
+                ], keyword)
+
+                if filled:
+                    await _try_click(page, [
+                        'button[type="submit"]',
+                        'input[type="submit"]',
+                        'button:has-text("Such")',
+                        'button:has-text("Suche starten")',
+                    ])
+
+            elif city["name"] == "Berlin":
+                await page.goto(city["url"], wait_until="domcontentloaded")
+                await page.wait_for_timeout(PAGE_SETTLE_MS)
+                await _dismiss_cookies(page)
+
+                filled = await _try_fill(page, [
+                    'input[name*="such" i]',
+                    'input[name*="query" i]',
+                    'input[type="text"]',
+                    '#searchTerm',
+                    'input[name*="volltext" i]',
+                ], keyword)
+
+                # Berlin also needs dates
+                await _try_fill(page, [
+                    'input[name*="von" i]', 'input[name*="from" i]',
+                    'input[name*="start" i]',
+                ], TODAY_DE)
+
+                await _try_fill(page, [
+                    'input[name*="bis" i]', 'input[name*="to" i]',
+                    'input[name*="end" i]',
+                ], TODAY_DE)
+
+                if filled:
+                    await _try_click(page, [
+                        'input[type="submit"]',
+                        'button[type="submit"]',
+                        'button:has-text("Such")',
+                    ])
+            else:
+                continue
+
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+            results = await _extract_results(page, city["url"])
+            all_results.extend(results)
+
+        except Exception as e:
+            logger.warning(f"       Keyword '{keyword}' failed: {e}")
+
+        # Be polite — don't hammer the server
+        await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+
+    # Remove duplicate results (same URL found by different keywords)
+    seen = set()
+    unique = []
+    for r in all_results:
+        if r["url"] not in seen:
+            seen.add(r["url"])
+            unique.append(r)
+    return unique
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 3: CLICK FIRST
+#  City: Düsseldorf
+#  Must click "Rechercheauswahl anzeigen" to reveal the
+#  search form, then proceed as standard.
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
+    """Click the reveal button first, then do standard search."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # Click the button that reveals the search form
+    revealed = await _try_click(page, [
+        'a:has-text("Rechercheauswahl anzeigen")',
+        'button:has-text("Rechercheauswahl anzeigen")',
+        'a:has-text("Recherche")',
+        '*:has-text("Rechercheauswahl anzeigen")',
+    ])
+
+    if not revealed:
+        try:
+            await page.get_by_text("Rechercheauswahl anzeigen").click()
+            revealed = True
+        except:
+            raise Exception("Could not find 'Rechercheauswahl anzeigen' button")
+
+    await page.wait_for_timeout(1500)
+
+    # Now proceed with the standard search flow
+    return await _do_standard_search(page, city, debug)
+
+
+async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
+    """
+    Shared search flow used by click_first (and potentially other variants).
+    Same steps as _scrape_standard but the page is already loaded.
+    """
+    keywords_str = " ".join(KEYWORDS)
+
+    filled = await _try_fill(page, [
+        'input[name="smcsuchwoerter"]',
+        'textarea[name="smcsuchwoerter"]',
+        '#smcsuchwoerter',
+        'input[name*="uchwoerter" i]',
+        'textarea[name*="uchwoerter" i]',
+        'input[name*="volltext" i]',
+    ], keywords_str)
+
+    if not filled:
+        try:
+            await page.get_by_label("Suchwort", exact=False).first.fill(keywords_str)
+            filled = True
+        except:
+            raise Exception("Could not find keyword input field")
+
+    # Select ODER
+    await _try_click(page, [
+        'input[type="radio"][value="ODER"]',
+        'input[type="radio"][value="oder"]',
+    ])
+    try:
+        await page.get_by_label("ODER", exact=True).check()
+    except:
+        pass
+
+    # Dates
+    await _try_fill(page, [
+        'input[name="smcfreigabevon"]', 'input[name*="von" i][size]',
+    ], TODAY_DE)
+    await _try_fill(page, [
+        'input[name="smcfreigabebis"]', 'input[name*="bis" i][size]',
+    ], TODAY_DE)
+
+    if debug:
+        safe = city["name"].replace(" ", "_")
+        await page.screenshot(path=f"debug_{safe}_pre_search.png", full_page=True)
+
+    await _try_click(page, [
+        'input[type="submit"][value*="uch" i]',
+        'button[type="submit"]',
+        'input[type="submit"]',
+    ])
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    return await _extract_results(page, city["url"])
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 4: ESSEN
+#  Keywords joined with " O " (the letter O) as OR separator
+#  because the site has no OR button.
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
+    """Essen: keywords use ' O ' as the OR separator."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # Join all keywords with " O " between them
+    keywords_str = " O ".join(KEYWORDS)
+
+    filled = await _try_fill(page, [
+        'input[name*="such" i]',
+        'textarea[name*="such" i]',
+        'input[name*="volltext" i]',
+        'input[type="text"]',
+        'input[type="search"]',
+    ], keywords_str)
+
+    if not filled:
+        raise Exception("Could not find keyword input for Essen")
+
+    # Set dates
+    await _try_fill(page, [
+        'input[name*="freigabevon" i]', 'input[name*="von" i][size]',
+    ], TODAY_DE)
+    await _try_fill(page, [
+        'input[name*="freigabebis" i]', 'input[name*="bis" i][size]',
+    ], TODAY_DE)
+
+    if debug:
+        await page.screenshot(path="debug_Essen_pre_search.png", full_page=True)
+
+    await _try_click(page, [
+        'input[type="submit"][value*="uch" i]',
+        'button[type="submit"]',
+        'input[type="submit"]',
+    ])
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    return await _extract_results(page, city["url"])
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 5: HANNOVER
+#  Keywords joined with " ODER " as the OR separator.
+#  Only ONE date field (searches from that date onward).
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_hannover(page: Page, city: dict, debug: bool) -> list:
+    """Hannover: ' ODER ' separator + single date field."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    keywords_str = " ODER ".join(KEYWORDS)
+
+    filled = await _try_fill(page, [
+        'input[name*="such" i]',
+        'textarea[name*="such" i]',
+        'input[type="text"]',
+        'input[type="search"]',
+    ], keywords_str)
+
+    if not filled:
+        raise Exception("Could not find keyword input for Hannover")
+
+    # Single date field only (searches from this date onward)
+    await _try_fill(page, [
+        'input[name*="datum" i]',
+        'input[name*="von" i]',
+        'input[name*="date" i]',
+        'input[type="date"]',
+    ], TODAY_DE)
+
+    if debug:
+        await page.screenshot(path="debug_Hannover_pre_search.png", full_page=True)
+
+    await _try_click(page, [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:has-text("Such")',
+        'button:has-text("Suche starten")',
+    ])
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    return await _extract_results(page, city["url"])
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 6: STUTTGART
+#  Different UI: must click tabs to reveal fields.
+#  1. Click "Vorgänge suchen, die…"
+#  2. Fill "eines dieser wörter enthalten" field
+#  3. Click "Zeitraum" tab
+#  4. Set dates
+#  5. Search
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
+    """Stuttgart AllRIS: click tabs first, then fill fields."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # Step 1: Click "Vorgänge suchen, die…" tab/link
+    clicked = await _try_click(page, [
+        'a:has-text("Vorgänge suchen")',
+        'button:has-text("Vorgänge suchen")',
+        'li:has-text("Vorgänge suchen") a',
+        'span:has-text("Vorgänge suchen")',
+    ])
+    if not clicked:
+        try:
+            await page.get_by_text("Vorgänge suchen, die").click()
+        except:
+            logger.warning("  Could not click 'Vorgänge suchen' for Stuttgart")
+    await page.wait_for_timeout(1000)
+
+    # Step 2: Keywords in "eines dieser wörter enthalten"
+    keywords_str = " ".join(KEYWORDS)
+
+    filled = await _try_fill(page, [
+        'input[name*="oder" i]',
+        'input[name*="worte" i]',
+        'textarea[name*="oder" i]',
+        'input[name*="eines" i]',
+    ], keywords_str)
+
+    if not filled:
+        try:
+            field = page.get_by_label("eines dieser", exact=False).first
+            await field.fill(keywords_str)
+            filled = True
+        except:
+            raise Exception("Could not find keyword field for Stuttgart")
+
+    # Step 3: Click "Zeitraum" to reveal date fields
+    await _try_click(page, [
+        'a:has-text("Zeitraum")',
+        'button:has-text("Zeitraum")',
+        'li:has-text("Zeitraum") a',
+        'span:has-text("Zeitraum")',
+    ])
+    await page.wait_for_timeout(1000)
+
+    # Step 4: Set dates
+    await _try_fill(page, [
+        'input[name*="von" i]', 'input[name*="start" i]',
+    ], TODAY_DE)
+    await _try_fill(page, [
+        'input[name*="bis" i]', 'input[name*="end" i]',
+    ], TODAY_DE)
+
+    if debug:
+        await page.screenshot(path="debug_Stuttgart_pre_search.png", full_page=True)
+
+    # Step 5: Search
+    await _try_click(page, [
+        'input[type="submit"]',
+        'button[type="submit"]',
+        'button:has-text("Such")',
+        'input[value*="uch" i]',
+    ])
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    return await _extract_results(page, city["url"])
+
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 7: FRANKFURT (PARLIS system)
+#  Different platform entirely — PARLIS full-text search.
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
+    """Frankfurt PARLIS full-text search."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    keywords_str = " ".join(KEYWORDS)
+
+    filled = await _try_fill(page, [
+        'input[name*="volltext" i]',
+        'textarea[name*="volltext" i]',
+        'input[name*="such" i]',
+        'textarea[name*="such" i]',
+        'input[type="text"]',
+        'input[type="search"]',
+    ], keywords_str)
+
+    if not filled:
+        raise Exception("Could not find search field for Frankfurt PARLIS")
+
+    # Set dates if available
+    await _try_fill(page, [
+        'input[name*="von" i]', 'input[name*="datum" i]',
+    ], TODAY_DE)
+    await _try_fill(page, [
+        'input[name*="bis" i]',
+    ], TODAY_DE)
+
+    if debug:
+        await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
+
+    await _try_click(page, [
+        'input[type="submit"]',
+        'button[type="submit"]',
+        'input[value*="uch" i]',
+        'button:has-text("Such")',
+    ])
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    return await _extract_results(page, city["url"])
+
+
+# ─────────────────────────────────────────────────────────
+# DISPATCH MAP — connects city types to their scrapers
+# ─────────────────────────────────────────────────────────
+_SCRAPER_MAP = {
+    "standard": _scrape_standard,
+    "individual": _scrape_individual,
+    "click_first": _scrape_click_first,
+    "essen": _scrape_essen,
+    "hannover": _scrape_hannover,
+    "stuttgart": _scrape_stuttgart,
+    "frankfurt": _scrape_frankfurt,
+}

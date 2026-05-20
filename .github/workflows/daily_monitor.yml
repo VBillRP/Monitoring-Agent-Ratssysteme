@@ -28,35 +28,35 @@ jobs:
 
     steps:
       # Step 1: Download your code from the repository
-      - name: 📥 Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       # Step 2: Install Python
-      - name: 🐍 Set up Python 3.12
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       # Step 3: Install Python packages
-      - name: 📦 Install Python dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       # Step 4: Install the Chrome browser for Playwright
-      - name: 🌐 Install Playwright browser
+      - name: Install Playwright browser
         run: |
           playwright install chromium
           playwright install-deps chromium
 
       # Step 5: Run the monitor script
       # The secrets are injected as environment variables
-      - name: 🚀 Run Council Monitor
+      - name: Run Council Monitor
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: python main.py
 
       # Step 6: Save debug screenshots if they were created
-      - name: 📸 Upload debug screenshots
+      - name: Upload debug screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:

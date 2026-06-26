@@ -12,6 +12,9 @@
 ═══════════════════════════════════════════════════════════════
 """
 
+import json
+import logging
+
 from openai import AsyncAzureOpenAI
 
 from config import (
@@ -105,14 +108,15 @@ async def filter_results(all_results: list) -> list:
             items = [{"title": r["title"], "url": r["url"]} for r in city_data["results"]]
 
             response = await client.chat.completions.create(
-    model=AZURE_OPENAI_DEPLOYMENT,
-    messages=[
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
-    ],
-    temperature=0.1,
-    max_tokens=4096,
-)
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
+                ],
+                temperature=0.1,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
 
             content = response.choices[0].message.content
 

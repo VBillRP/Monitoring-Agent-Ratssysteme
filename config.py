@@ -60,7 +60,11 @@ TODAY_ISO = datetime.now().strftime("%Y-%m-%d")    # e.g. "2026-05-06"
 # ─────────────────────────────────────────────────────────
 # API KEYS — loaded from environment variables (never hard-code!)
 # ─────────────────────────────────────────────────────────
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
 TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
 
 # ─────────────────────────────────────────────────────────
@@ -68,7 +72,7 @@ TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
 # "gpt-4o-mini" is fast & cheap (~$0.15 per 1M input tokens)
 # Change to "gpt-4o" for better accuracy (10x more expensive)
 # ─────────────────────────────────────────────────────────
-LLM_MODEL = "gpt-4o-mini"
+
 
 # ─────────────────────────────────────────────────────────
 # CITY CONFIGURATIONS

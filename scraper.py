@@ -160,6 +160,35 @@ async def _try_fill(page: Page, selectors: list, value: str) -> bool:
     return False
 
 
+async def _try_fill_date(page: Page, selectors: list, de_value: str, iso_value: str) -> bool:
+    """
+    Fill a date field, formatting the value for the input type.
+
+    Current SessionNet uses HTML5 <input type="date">, which only accepts
+    ISO format (YYYY-MM-DD); filling German DD.MM.YYYY raises "Malformed
+    value". Legacy text inputs still expect the German format.
+
+    After filling a native date input we press Escape to dismiss the
+    picker — otherwise it stays open and intercepts the click on the
+    Search button, which manifests as "Could not find the Search button".
+    """
+    for sel in selectors:
+        try:
+            elem = page.locator(sel).first
+            if await elem.is_visible(timeout=1500):
+                input_type = (await elem.get_attribute("type") or "").lower()
+                if input_type == "date":
+                    await elem.fill(iso_value)
+                    await elem.press("Escape")
+                else:
+                    await elem.clear()
+                    await elem.fill(de_value)
+                return True
+        except:
+            continue
+    return False
+
+
 async def _try_click(page: Page, selectors: list) -> bool:
     """
     Try a list of CSS selectors one by one until one works,
@@ -304,9 +333,11 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
 
     # ── Step 2: Enter keywords ──
     filled = await _try_fill(page, [
-        'input[name="smcsuchwoerter"]',        # SessionNet standard
-        'textarea[name="smcsuchwoerter"]',      # Some use textarea
-        '#smcsuchwoerter',                      # By ID
+        'input[name="__swords"]',               # Current SessionNet field name
+        'textarea[name="__swords"]',
+        'input[name="smcsuchwoerter"]',         # Older SessionNet
+        'textarea[name="smcsuchwoerter"]',
+        '#smcsuchwoerter',
         'input[name*="uchwoerter" i]',          # Partial match
         'textarea[name*="uchwoerter" i]',
         'input[name*="volltext" i]',            # AllRIS variant
@@ -327,8 +358,9 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
         raise Exception("Could not find the keyword search field (Suchwort)")
 
     # ── Step 3: Select "ODER" (OR search) ──
-    # Try clicking the ODER radio button
+    # Current SessionNet uses radio __sao with value="1" (UND) / "2" (ODER).
     oder_clicked = await _try_click(page, [
+        'input[name="__sao"][value="2"]',       # Current SessionNet: 2 = ODER
         'input[type="radio"][value="ODER"]',
         'input[type="radio"][value="oder"]',
         'input[type="radio"][value="or"]',
@@ -346,21 +378,23 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
                 logger.warning(f"  Could not select ODER for {city['name']} — proceeding anyway")
 
     # ── Steps 4 & 5: Set date fields ──
-    await _try_fill(page, [
+    await _try_fill_date(page, [
+        'input[name="__axxdat_full"]',          # Current SessionNet: date from
         'input[name="smcfreigabevon"]',
         'input[name*="freigabevon" i]',
         '#smcfreigabevon',
         'input[name*="datumvon" i]',
         'input[name*="von" i][size]',
-    ], TODAY_DE)
+    ], TODAY_DE, TODAY_ISO)
 
-    await _try_fill(page, [
+    await _try_fill_date(page, [
+        'input[name="__exxdat_full"]',          # Current SessionNet: date to
         'input[name="smcfreigabebis"]',
         'input[name*="freigabebis" i]',
         '#smcfreigabebis',
         'input[name*="datumbis" i]',
         'input[name*="bis" i][size]',
-    ], TODAY_DE)
+    ], TODAY_DE, TODAY_ISO)
 
     if debug:
         safe = city["name"].replace(" ", "_")
@@ -368,6 +402,7 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
 
     # ── Step 6: Click Search button ──
     clicked = await _try_click(page, [
+        'input[name="go"]',                        # Current SessionNet submit
         'input[type="submit"][value*="uch" i]',    # "Suchen" or "suchen"
         'button[type="submit"]:has-text("uch")',
         'input[name*="submit" i][value*="uch" i]',
@@ -529,6 +564,8 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
     keywords_str = " ".join(KEYWORDS)
 
     filled = await _try_fill(page, [
+        'input[name="__swords"]',
+        'textarea[name="__swords"]',
         'input[name="smcsuchwoerter"]',
         'textarea[name="smcsuchwoerter"]',
         '#smcsuchwoerter',
@@ -546,6 +583,7 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 
     # Select ODER
     await _try_click(page, [
+        'input[name="__sao"][value="2"]',       # Current SessionNet: 2 = ODER
         'input[type="radio"][value="ODER"]',
         'input[type="radio"][value="oder"]',
     ])
@@ -555,18 +593,21 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
         pass
 
     # Dates
-    await _try_fill(page, [
+    await _try_fill_date(page, [
+        'input[name="__axxdat_full"]',
         'input[name="smcfreigabevon"]', 'input[name*="von" i][size]',
-    ], TODAY_DE)
-    await _try_fill(page, [
+    ], TODAY_DE, TODAY_ISO)
+    await _try_fill_date(page, [
+        'input[name="__exxdat_full"]',
         'input[name="smcfreigabebis"]', 'input[name*="bis" i][size]',
-    ], TODAY_DE)
+    ], TODAY_DE, TODAY_ISO)
 
     if debug:
         safe = city["name"].replace(" ", "_")
         await page.screenshot(path=f"debug_{safe}_pre_search.png", full_page=True)
 
     await _try_click(page, [
+        'input[name="go"]',
         'input[type="submit"][value*="uch" i]',
         'button[type="submit"]',
         'input[type="submit"]',

@@ -12,16 +12,28 @@
 ═══════════════════════════════════════════════════════════════
 """
 
-import json
-import logging
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI
 
-from config import OPENAI_API_KEY, LLM_MODEL
+from config import (
+    AZURE_OPENAI_API_KEY,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_OPENAI_DEPLOYMENT,
+    AZURE_OPENAI_API_VERSION,
+)
 
 logger = logging.getLogger("council-monitor.llm")
 
-# Only create the client if we have an API key
-client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# Only create the client if we have the required Azure OpenAI settings
+client = None
+
+if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT:
+    client = AsyncAzureOpenAI(
+        api_key=AZURE_OPENAI_API_KEY,
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        api_version=AZURE_OPENAI_API_VERSION,
+    )
+else:
+    logger.warning("Azure OpenAI settings are missing — AI filtering will be skipped")
 
 # ─── The prompt that tells the AI what to keep/discard ───
 SYSTEM_PROMPT = """You are an analyst monitoring German city council decisions 
@@ -93,14 +105,14 @@ async def filter_results(all_results: list) -> list:
             items = [{"title": r["title"], "url": r["url"]} for r in city_data["results"]]
 
             response = await client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
-                ],
-                temperature=0.1,   # Very low = consistent, deterministic answers
-                max_tokens=4096,
-            )
+    model=AZURE_OPENAI_DEPLOYMENT,
+    messages=[
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
+    ],
+    temperature=0.1,
+    max_tokens=4096,
+)
 
             content = response.choices[0].message.content
 

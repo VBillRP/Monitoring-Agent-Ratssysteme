@@ -122,19 +122,22 @@ CITIES = [
     },
     {
         "name": "Dortmund",
-        "url": "https://sessionnet.owl-it.de/dortmund/bi/recherche.asp",
+        "url": "https://sessionnet.owl-it.de/dortmund/bi/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
     {
         "name": "Münster",
-        "url": "https://www.stadt-muenster.de/sessionnet/sessionnetbi/recherche.php",
+        "url": "https://www.stadt-muenster.de/sessionnet/sessionnetbi/suchen01.php?smcrecherche=7020",
         "type": "standard",
     },
     {
         "name": "Nuremberg",
-        "url": "https://online-service2.nuernberg.de/buergerinfo/recherche.asp",
+        "url": "https://online-service2.nuernberg.de/buergerinfo/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
+    # NOTE: Leipzig runs AllRIS (not SessionNet) and uses a different form
+    # layout — the "standard" handler does not fit it. It also blocks
+    # datacenter/CI IPs. Needs a dedicated AllRIS handler; left as-is for now.
     {
         "name": "Leipzig",
         "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
@@ -142,12 +145,12 @@ CITIES = [
     },
     {
         "name": "Mainz",
-        "url": "https://bi.mainz.de/recherche.php",
+        "url": "https://bi.mainz.de/suchen01.php?smcrecherche=7020",
         "type": "standard",
     },
     {
         "name": "Mannheim",
-        "url": "https://buergerinfo.mannheim.de/buergerinfo/recherche.asp",
+        "url": "https://buergerinfo.mannheim.de/buergerinfo/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
     {
@@ -155,19 +158,22 @@ CITIES = [
         "url": "https://ris-moenchengladbach.itk-rheinland.de/sessionnetmglbi/suchen01.asp",
         "type": "standard",
     },
+    # NOTE: Ludwigshafen sits behind a Myra WAF that returns a 503
+    # "blocked" page to datacenter/CI traffic. May work from a residential
+    # IP; expect it to fail in GitHub Actions regardless of selectors.
     {
         "name": "Ludwigshafen",
-        "url": "https://www.ludwigshafen.de/ratsinformationssystem/bi/recherche.php",
+        "url": "https://www.ludwigshafen.de/ratsinformationssystem/bi/suchen01.php?smcrecherche=7020",
         "type": "standard",
     },
     {
         "name": "Heidelberg",
-        "url": "https://www.gemeinderat.heidelberg.de/recherche.asp",
+        "url": "https://gemeinderat.heidelberg.de/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
     {
         "name": "Cologne",
-        "url": "https://ratsinformation.stadt-koeln.de/recherche.asp",
+        "url": "https://ratsinformation.stadt-koeln.de/suchen01.asp",
         "type": "standard",
     },
 

@@ -398,7 +398,7 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
         '#smcfreigabevon',
         'input[name*="datumvon" i]',
         'input[name*="von" i][size]',
-    ], TODAY_DE, TODAY_ISO)
+   ], YESTERDAY_DE, YESTERDAY_ISO)
 
     await _try_fill_date(page, [
         'input[name="__exxdat_full"]',          # Current SessionNet: date to

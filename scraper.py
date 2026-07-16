@@ -636,7 +636,7 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
     await _try_fill_date(page, [
         'input[name="__exxdat_full"]',
         'input[name="smcfreigabebis"]', 'input[name*="bis" i][size]',
-    ], TODAY_DE, TODAY_ISO)
+    ], YESTERDAY_DE, YESTERDAY_ISO)
 
     if debug:
         safe = city["name"].replace(" ", "_")

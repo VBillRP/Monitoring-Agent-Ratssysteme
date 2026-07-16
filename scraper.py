@@ -20,7 +20,7 @@ from datetime import datetime
 from urllib.parse import urljoin
 from playwright.async_api import async_playwright, Page
 
-from config import KEYWORDS, TODAY_DE, TODAY_ISO
+from config import KEYWORDS, TODAY_DE, TODAY_ISO, YESTERDAY_DE, YESTERDAY_ISO
 
 logger = logging.getLogger("council-monitor.scraper")
 

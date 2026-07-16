@@ -11,7 +11,7 @@
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────────────────
 # SEARCH KEYWORDS
@@ -56,6 +56,10 @@ KEYWORDS = [
 # ─────────────────────────────────────────────────────────
 TODAY_DE = datetime.now().strftime("%d.%m.%Y")    # e.g. "06.05.2026"
 TODAY_ISO = datetime.now().strftime("%Y-%m-%d")    # e.g. "2026-05-06"
+
+# Vortag (gestern) — deckt Einträge ab, die erst nach dem gestrigen Lauf kamen.
+YESTERDAY_DE = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+YESTERDAY_ISO = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 # ─────────────────────────────────────────────────────────
 # API KEYS — loaded from environment variables (never hard-code!)

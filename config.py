@@ -57,9 +57,16 @@ KEYWORDS = [
 TODAY_DE = datetime.now().strftime("%d.%m.%Y")    # e.g. "06.05.2026"
 TODAY_ISO = datetime.now().strftime("%Y-%m-%d")    # e.g. "2026-05-06"
 
-# Vortag (gestern) — deckt Einträge ab, die erst nach dem gestrigen Lauf kamen.
-YESTERDAY_DE = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-YESTERDAY_ISO = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+# Startdatum der Suche.
+# Das Tool läuft nur Mo–Fr. Am Montag müssen wir daher bis Freitag
+# zurückgehen, um Freitagnachmittag + das ganze Wochenende abzudecken.
+# An allen anderen Tagen reicht "gestern".
+#   weekday(): Montag = 0, Dienstag = 1, ..., Sonntag = 6
+_days_back = 3 if datetime.now().weekday() == 0 else 1
+_start_date = datetime.now() - timedelta(days=_days_back)
+
+YESTERDAY_DE = _start_date.strftime("%d.%m.%Y")
+YESTERDAY_ISO = _start_date.strftime("%Y-%m-%d")
 
 # ─────────────────────────────────────────────────────────
 # API KEYS — loaded from environment variables (never hard-code!)

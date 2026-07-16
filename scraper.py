@@ -462,7 +462,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
             if city["name"] == "Munich":
                 url = (
                     f"https://risi.muenchen.de/risi/suche?3"
-                    f"&von={TODAY_ISO}&bis={TODAY_ISO}"
+                    f"&von={YESTERDAY_ISO}&bis={TODAY_ISO}"
                     f"&bereich=Vorgang"
                     f"&objekt=1&objekt=2&objekt=51&objekt=52&objekt=53"
                 )
@@ -495,7 +495,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 await _try_fill(page, [
                     'input[name*="von" i]', 'input[name*="from" i]',
                     'input[name*="start" i]',
-                ], TODAY_DE)
+              ], YESTERDAY_DE)
                 await _try_fill(page, [
                     'input[name*="bis" i]', 'input[name*="to" i]',
                     'input[name*="end" i]',

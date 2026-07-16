@@ -683,7 +683,7 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     # Set dates
     await _try_fill(page, [
         'input[name*="freigabevon" i]', 'input[name*="von" i][size]',
-    ], TODAY_DE)
+   ], YESTERDAY_DE)
     await _try_fill(page, [
         'input[name*="freigabebis" i]', 'input[name*="bis" i][size]',
     ], TODAY_DE)
@@ -732,7 +732,7 @@ async def _scrape_hannover(page: Page, city: dict, debug: bool) -> list:
         'input[name*="von" i]',
         'input[name*="date" i]',
         'input[type="date"]',
-    ], TODAY_DE)
+ ], YESTERDAY_DE)
 
     if debug:
         await page.screenshot(path="debug_Hannover_pre_search.png", full_page=True)
@@ -809,7 +809,7 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
     # Step 4: Set dates
     await _try_fill(page, [
         'input[name*="von" i]', 'input[name*="start" i]',
-    ], TODAY_DE)
+    ], YESTERDAY_DE)
     await _try_fill(page, [
         'input[name*="bis" i]', 'input[name*="end" i]',
     ], TODAY_DE)
@@ -858,7 +858,7 @@ async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
     # Set dates if available
     await _try_fill(page, [
         'input[name*="von" i]', 'input[name*="datum" i]',
-    ], TODAY_DE)
+  ], YESTERDAY_DE)
     await _try_fill(page, [
         'input[name*="bis" i]',
     ], TODAY_DE)

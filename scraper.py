@@ -993,6 +993,7 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
 _SCRAPER_MAP = {
     "standard": _scrape_standard,
     "individual": _scrape_individual,
+    "berlin": _scrape_berlin,
     "click_first": _scrape_click_first,
     "essen": _scrape_essen,
     "hannover": _scrape_hannover,

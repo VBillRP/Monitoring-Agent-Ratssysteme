@@ -205,15 +205,13 @@ async def _try_click(page: Page, selectors: list) -> bool:
     return False
 
 
-async def _extract_results(page: Page, base_url: str) -> list:
+async def _extract_results(page: Page, base_url: str, strict: bool = False) -> list:
     """
     Generic result extractor for SessionNet / AllRIS pages.
 
-    These systems typically show results as:
-      • A table with rows, each containing a link
-      • Or a list of links in a results area
-
-    This function tries multiple strategies to find result links.
+    strict=True  → for Berlin/Munich: ONLY read from real result
+                   containers, never from generic page/nav links,
+                   and drop known menu/navigation entries.
     """
     results = []
 
@@ -233,31 +231,43 @@ async def _extract_results(page: Page, base_url: str) -> list:
         if phrase in body_lower:
             return []
 
-    # ── Try to find result links using various CSS strategies ──
-    # These are ordered from most specific to least specific.
-    link_strategies = [
-        # SessionNet-specific selectors
+    # ── Result-container selectors (specific → generic) ──
+    specific_strategies = [
         'table.smccontenttable a[href]',
         'table.smclisttable a[href]',
         '.smclistbody a[href]',
         '#smcresult a[href]',
-        # AllRIS-specific selectors
         'table.tl1 a[href]',
         'table.tk1 a[href]',
         '#applicationcontent a[href]',
-        # Common document link patterns
         'table a[href*="vo020"]',
         'table a[href*="to020"]',
         'table a[href*="si010"]',
         'table a[href*="vo0050"]',
-        # Generic result containers
         '.resultlist a[href]',
         '.search-results a[href]',
         'ul.results a[href]',
-        # Last resort: any link in the main content area
+    ]
+    # These grab EVERYTHING on the page (incl. nav) — only used
+    # for the normal cities, never in strict mode.
+    last_resort_strategies = [
         '#main a[href]',
         '#content a[href]',
         'table a[href]',
+    ]
+
+    link_strategies = specific_strategies
+    if not strict:
+        link_strategies = specific_strategies + last_resort_strategies
+
+    # Words that identify menu / navigation links (never real hits)
+    nav_noise = [
+        "impressum", "datenschutz", "kontakt", "sitemap", "login",
+        "anmelden", "startseite", "home", "hilfe", "barrierefrei",
+        "zur navigation", "zum inhalt", "erweiterte suche", "neue suche",
+        "lobbyregister", "plenarsitzung", "wahlperiode",
+        "schriftliche anfragen", "recherche ab", "dokumentenabruf",
+        "dokumentation@", "@parlament", "drucksachennummern",
     ]
 
     for strategy in link_strategies:
@@ -271,19 +281,22 @@ async def _extract_results(page: Page, base_url: str) -> list:
                     text = (await link.inner_text()).strip()
                     href = await link.get_attribute("href")
 
-                    # Skip empty, very short, or navigation links
+                    # Skip empty, very short, or non-links
                     if not text or not href or len(text) < 5:
                         continue
-                    if href == "#" or href.startswith("javascript:"):
-                        continue
-                    # Skip common navigation links
-                    skip_words = ["impressum", "datenschutz", "kontakt", "sitemap",
-                                  "login", "anmelden", "startseite", "home"]
-                    if any(w in text.lower() for w in skip_words):
+                    if href == "#" or href.startswith("javascript:") or href.startswith("mailto:"):
                         continue
 
-                    # Make the URL absolute
+                    # Skip navigation / menu entries
+                    if any(w in text.lower() for w in nav_noise):
+                        continue
+
                     full_url = href if href.startswith("http") else urljoin(base_url, href)
+
+                    # In strict mode also drop links back to the search/browse portal
+                    if strict and ("browse.tt.html" in full_url or full_url.rstrip("/") == base_url.rstrip("/")):
+                        continue
+
                     results.append({"title": text, "url": full_url})
 
                 except:
@@ -433,15 +446,20 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
-    """Search each keyword individually and merge all results."""
+    """
+    Berlin / Munich: each keyword must be searched separately.
+    Returns ONLY real document hits — never navigation/menu links.
+    Raises an error if no search could actually be run, so the city
+    is reported as an ERROR instead of silently returning junk.
+    """
     all_results = []
+    searches_ok = 0  # how many keyword searches actually executed
 
     for i, keyword in enumerate(KEYWORDS):
         logger.info(f"       Keyword {i+1}/{len(KEYWORDS)}: {keyword}")
 
         try:
             if city["name"] == "Munich":
-                # Munich embeds date parameters in the URL itself
                 url = (
                     f"https://risi.muenchen.de/risi/suche?3"
                     f"&von={TODAY_ISO}&bis={TODAY_ISO}"
@@ -459,15 +477,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                     'input[type="text"]',
                 ], keyword)
 
-                if filled:
-                    await _try_click(page, [
-                        'button[type="submit"]',
-                        'input[type="submit"]',
-                        'button:has-text("Such")',
-                        'button:has-text("Suche starten")',
-                    ])
-
-            elif city["name"] == "Berlin":
+            else:  # Berlin
                 await page.goto(city["url"], wait_until="domcontentloaded")
                 await page.wait_for_timeout(PAGE_SETTLE_MS)
                 await _dismiss_cookies(page)
@@ -475,42 +485,68 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 filled = await _try_fill(page, [
                     'input[name*="such" i]',
                     'input[name*="query" i]',
-                    'input[type="text"]',
-                    '#searchTerm',
                     'input[name*="volltext" i]',
+                    '#searchTerm',
+                    'input[type="search"]',
+                    'input[type="text"]',
                 ], keyword)
 
-                # Berlin also needs dates
+                # Berlin also needs the date fields
                 await _try_fill(page, [
                     'input[name*="von" i]', 'input[name*="from" i]',
                     'input[name*="start" i]',
                 ], TODAY_DE)
-
                 await _try_fill(page, [
                     'input[name*="bis" i]', 'input[name*="to" i]',
                     'input[name*="end" i]',
                 ], TODAY_DE)
 
-                if filled:
-                    await _try_click(page, [
-                        'input[type="submit"]',
-                        'button[type="submit"]',
-                        'button:has-text("Such")',
-                    ])
-            else:
+            # No search field found → NOT a valid search. Skip this
+            # keyword (do NOT scrape navigation links as "results").
+            if not filled:
+                logger.warning(f"       No search field for '{keyword}' — skipped")
                 continue
+
+            clicked = await _try_click(page, [
+                'input[name="go"]',
+                'input[type="submit"][value*="uch" i]',
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Such")',
+            ])
+            if not clicked:
+                # Fallback: submit with Enter
+                try:
+                    await page.keyboard.press("Enter")
+                except:
+                    logger.warning(f"       Could not submit search for '{keyword}'")
+                    continue
 
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(PAGE_SETTLE_MS)
 
-            results = await _extract_results(page, city["url"])
+            if debug:
+                safe = city["name"].replace(" ", "_")
+                await page.screenshot(path=f"debug_{safe}_{i+1}.png", full_page=True)
+
+            # STRICT extraction: real result links only
+            results = await _extract_results(page, city["url"], strict=True)
             all_results.extend(results)
+            searches_ok += 1
 
         except Exception as e:
             logger.warning(f"       Keyword '{keyword}' failed: {e}")
 
         # Be polite — don't hammer the server
         await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+
+    # If not a single search actually ran, report an ERROR instead
+    # of pretending the city was searched successfully.
+    if searches_ok == 0:
+        raise Exception(
+            "Could not run any keyword search (search field/button not found). "
+            "Check the search URL and selectors for this city."
+        )
 
     # Remove duplicate results (same URL found by different keywords)
     seen = set()

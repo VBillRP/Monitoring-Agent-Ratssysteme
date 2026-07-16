@@ -877,7 +877,116 @@ async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     return await _extract_results(page, city["url"])
 
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE 8: BERLIN (PARDOK "portala")
+#  Own search page. Steps per keyword:
+#   1. Type keyword into the main search box
+#   2. Turn on "Volltextsuche"
+#   3. Expand "Weitere Suchoptionen" to reveal the date fields
+#   4. Fill "Von" (yesterday) and "Bis" (today)
+#   5. Click "Suchen"
+#   6. Read ONLY real result links (strict)
+# ═══════════════════════════════════════════════════════════
 
+async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
+    """Berlin PARDOK: dedicated handler, one keyword at a time."""
+    all_results = []
+    searches_ok = 0
+
+    for i, keyword in enumerate(KEYWORDS):
+        logger.info(f"       Keyword {i+1}/{len(KEYWORDS)}: {keyword}")
+        try:
+            await page.goto(city["url"], wait_until="domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+            await _dismiss_cookies(page)
+
+            # 1) Keyword into the main search box
+            filled = await _try_fill(page, [
+                'input[placeholder*="Suchbegriff" i]',
+                'input[placeholder*="Drucksachennummer" i]',
+                'input[type="search"]',
+                'input[type="text"]',
+            ], keyword)
+            if not filled:
+                logger.warning(f"       No search field for '{keyword}' — skipped")
+                continue
+
+            # 2) Switch on "Volltextsuche" (search in document text)
+            try:
+                await page.get_by_text("Volltextsuche", exact=False).first.click()
+                await page.wait_for_timeout(300)
+            except:
+                pass
+
+            # 3) Expand "Weitere Suchoptionen" to reveal date fields
+            await _try_click(page, [
+                'button:has-text("Weitere Suchoptionen")',
+                'a:has-text("Weitere Suchoptionen")',
+                '*:has-text("Weitere Suchoptionen")',
+            ])
+            await page.wait_for_timeout(800)
+
+            # 4) Date range: Von = yesterday, Bis = today (DD.MM.YYYY)
+            von_ok = await _try_fill(page, [
+                'input[placeholder="Von"]',
+                'input[placeholder*="Von" i]',
+            ], YESTERDAY_DE)
+            await _try_fill(page, [
+                'input[placeholder="Bis"]',
+                'input[placeholder*="Bis" i]',
+            ], TODAY_DE)
+            # Close any date-picker popup that might block the button
+            try:
+                await page.keyboard.press("Escape")
+            except:
+                pass
+
+            if debug:
+                await page.screenshot(path=f"debug_Berlin_{i+1}.png", full_page=True)
+
+            # 5) Click "Suchen"
+            clicked = await _try_click(page, [
+                'button:has-text("Suchen")',
+                'input[type="submit"][value*="uch" i]',
+                'button[type="submit"]',
+            ])
+            if not clicked:
+                try:
+                    await page.keyboard.press("Enter")
+                except:
+                    logger.warning(f"       Could not submit search for '{keyword}'")
+                    continue
+
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+            if debug:
+                await page.screenshot(path=f"debug_Berlin_{i+1}_results.png", full_page=True)
+
+            # 6) Strict extraction: real result links only
+            results = await _extract_results(page, city["url"], strict=True)
+            all_results.extend(results)
+            searches_ok += 1
+
+        except Exception as e:
+            logger.warning(f"       Keyword '{keyword}' failed: {e}")
+
+        await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+
+    if searches_ok == 0:
+        raise Exception(
+            "Could not run any keyword search on PARDOK "
+            "(search field/button not found)."
+        )
+
+    # Remove duplicates
+    seen = set()
+    unique = []
+    for r in all_results:
+        if r["url"] not in seen:
+            seen.add(r["url"])
+            unique.append(r)
+    return unique
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers
 # ─────────────────────────────────────────────────────────

@@ -199,7 +199,7 @@ CITIES = [
     {
         "name": "Berlin",
         "url": "https://pardok.parlament-berlin.de/portala/browse.tt.html",
-        "type": "individual",
+      "type": "berlin",
     },
     {
         "name": "Munich",

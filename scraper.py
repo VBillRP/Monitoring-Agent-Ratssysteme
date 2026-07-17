@@ -661,10 +661,10 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
-    """Essen: RIS 'Recherche' form. Keyword box 'Suchbegriffe', two native
-    date inputs, search button 'Anzeigen'. ' O ' = OR separator.
-    Each document is anchored by its clickable weekday-date link
-    (e.g. 'Do, 16.07.2026 17:33 Uhr')."""
+    """Essen (Sternberg SD.NET RIM): 'Recherche' form. Keyword box
+    'Suchbegriffe', two native date inputs, button 'Anzeigen'. ' O ' = OR.
+    NOTE: the weekday-date link points to the MEETING (shared by many docs),
+    so the per-document link is the TITLE/icon, not the date."""
     import re
     from datetime import datetime, timedelta
 
@@ -754,59 +754,34 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     if debug:
         await page.screenshot(path="debug_Essen_results.png", full_page=True)
 
-    # ── Extraction anchored on the weekday-date LINKS (one per document) ──
-    date_link_pat = re.compile(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}")
-    time_pat = re.compile(r"\d{2}:\d{2}\s*Uhr")
+    # ══════════ EXTRACTION + DIAGNOSTICS ══════════
+    date_pat  = re.compile(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}")
+    # Document titles in this system start with these words or carry a "/20xx" ref.
+    title_pat = re.compile(
+        r"(Vorlage|Antrag|Anfrage|Einladung|Tagesordnung|Bezirksvertretung|"
+        r"Beschluss|Mitteilung|Niederschrift|Bürgeranfrage|TOP|/20\d{2})", re.I
+    )
 
-    results = []
-    seen = set()
-    kept_log = []
-
-    anchors = await page.locator("a[href]").all()
-    date_links = []
-    for a in anchors:
+    # Collect every real anchor once
+    anchors = []
+    for a in await page.locator("a[href]").all():
         try:
             t = " ".join((await a.inner_text()).split())
             h = await a.get_attribute("href")
         except Exception:
             continue
-        if not h or "javascript" in h.lower():
+        if not h or h.startswith("javascript") or h.strip() in ("#", ""):
             continue
-        if date_link_pat.search(t):
-            date_links.append((a, h))
+        anchors.append((t, h))
 
-    logger.info(f"  Essen: found {len(date_links)} date-link(s)")
+    # DIAGNOSTIC 1: confirm the date-links all point to the same meeting
+    date_hrefs = {h for (t, h) in anchors if date_pat.search(t)}
+    logger.info(f"  Essen: {len(date_hrefs)} UNIQUE date-link href(s) "
+                f"(hypothesis: they point to meetings, not documents)")
+    for h in list(date_hrefs)[:4]:
+        logger.info(f"  Essen: date-href -> {h[:90]}")
 
-    for a, h in date_links:
-        # Title from the surrounding table row
-        title = ""
-        try:
-            row = a.locator("xpath=ancestor::tr[1]")
-            row_txt = " ".join((await row.inner_text()).split())
-            title = date_link_pat.sub("", row_txt)
-            title = time_pat.sub("", title)
-            title = re.sub(r"\s{2,}", " ", title).strip(" -–|,")
-        except Exception:
-            pass
-        full = urljoin(city["url"], h)
-        if full in seen:
-            continue
-        seen.add(full)
-        results.append({"title": (title or "(ohne Titel)")[:200], "url": full})
-        kept_log.append((title or "(ohne Titel)")[:70])
-
-    logger.info(f"  Essen: extraction kept {len(results)} document(s)")
-    for k in kept_log:
-        logger.info(f"  Essen: kept -> {k}")
-
-    # Safety net: if nothing anchored on date-links, use the generic extractor
-    if not results:
-        logger.info("  Essen: date-link pass empty — falling back to generic extractor")
-        results = await _extract_results(page, city["url"])
-
-    logger.info(f"  Essen: extracted {len(results)} result(s) from {page.url}")
-    return results
-
+    # DIAGNOSTIC
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE 5: HANNOVER

@@ -663,8 +663,8 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     """Essen (Sternberg SD.NET RIM): 'Recherche' form. Keyword box
     'Suchbegriffe', two native date inputs, button 'Anzeigen'. ' O ' = OR.
-    Result documents live under '/vorgang/' (Vorlagen + Anlagen) AND
-    '/tops/' (the meeting Einladung/Tagesordnung). Capture BOTH."""
+    Documents live under '/vorgang/' and '/tops/'. The clickable link is
+    often an ICON with no text, so the TITLE comes from the table ROW."""
     import re
     from datetime import datetime, timedelta
 
@@ -749,12 +749,44 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     if debug:
         await page.screenshot(path="debug_Essen_results.png", full_page=True)
 
-    # ── Extraction: capture EVERY result document. They live under BOTH
-    #    '/vorgang/' (Vorlagen + Anlagen) and '/tops/' (Einladung/meeting).
-    #    Dedupe by URL, keep the longest (most descriptive) anchor text. ──
+    # ── Extraction: iterate ROWS, keep those with a '/vorgang/' or '/tops/'
+    #    link. Title = cleaned ROW text (the link itself is often an icon). ──
     DOC_PATHS = ("/vorgang/", "/tops/")
-    best = {}   # url -> best title text seen for that url
-    for a in await page.locator("a[href]").all():
+
+    def clean(txt: str) -> str:
+        t = re.sub(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}", "", txt or "")
+        t = re.sub(r"\d{2}:\d{2}\s*Uhr", "", t)
+        t = re.sub(r"\s{2,}", " ", t).strip(" -–|,")
+        return t
+
+    results, seen = [], set()
+
+    for row in await page.locator("tr").all():
+        try:
+            row_txt = " ".join((await row.inner_text()).split())
+        except Exception:
+            row_txt = ""
+        # find the document link inside this row
+        doc_url = None
+        for a in await row.locator("a[href]").all():
+            try:
+                h = await a.get_attribute("href")
+            except Exception:
+                continue
+            if not h:
+                continue
+            full = urljoin(city["url"], h)
+            if any(p in full for p in DOC_PATHS):
+                doc_url = full
+                break
+        if not doc_url or doc_url in seen:
+            continue
+        seen.add(doc_url)
+        title = clean(row_txt) or "(ohne Titel)"
+        results.append({"title": title[:200], "url": doc_url})
+
+    # catch any doc links that were NOT inside a <tr> (use their own text)
+    for a in await page.locator('a[href*="/vorgang/"], a[href*="/tops/"]').all():
         try:
             raw = await a.inner_text()
             t = " ".join(raw.split()) if raw else ""
@@ -763,28 +795,16 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
             continue
         if not h:
             continue
-        hl = h.strip().lower()
-        if hl in ("", "#") or hl.startswith("javascript") or hl.startswith("mailto"):
-            continue
         full = urljoin(city["url"], h)
-        if not any(p in full for p in DOC_PATHS):
+        if full in seen:
             continue
-        if full not in best or len(t) > len(best[full]):
-            best[full] = t
-
-    def clean(txt: str) -> str:
-        t = re.sub(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}", "", txt or "")
-        t = re.sub(r"\d{2}:\d{2}\s*Uhr", "", t)
-        t = re.sub(r"\s{2,}", " ", t).strip(" -–|,")
-        return (t or "(ohne Titel)")[:200]
-
-    results = [{"title": clean(t), "url": url} for url, t in best.items()]
+        seen.add(full)
+        results.append({"title": (clean(t) or "(ohne Titel)")[:200], "url": full})
 
     logger.info(f"  Essen: extracted {len(results)} document(s)")
     for r in results:
         logger.info(f"  Essen: kept -> {r['title'][:70]}")
 
-    # Safety net: layout change -> generic reader
     if not results:
         logger.info("  Essen: no document links — falling back to generic extractor")
         results = await _extract_results(page, city["url"])

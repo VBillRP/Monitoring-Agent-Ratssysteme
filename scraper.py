@@ -808,6 +808,7 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     logger.info(f"  Essen: extracted {len(results)} result(s) from {page.url}")
     return results
 
+
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE 5: HANNOVER
 #  Keywords joined with " ODER " as the OR separator.

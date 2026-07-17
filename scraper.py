@@ -663,11 +663,10 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     """Essen (Sternberg SD.NET RIM): 'Recherche' form. Keyword box
     'Suchbegriffe', two native date inputs, button 'Anzeigen'. ' O ' = OR.
-    Documents are found by grouping result links by URL path and picking
-    the group with the most DISTINCT document URLs (date-link -> meeting)."""
+    Result documents live under '/vorgang/' (Vorlagen + Anlagen) AND
+    '/tops/' (the meeting Einladung/Tagesordnung). Capture BOTH."""
     import re
     from datetime import datetime, timedelta
-    from urllib.parse import urlparse
 
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
@@ -704,26 +703,23 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
         try:
             await page.get_by_label("Suchbegriffe", exact=False).first.fill(keywords_str)
             filled = True
-            logger.info("  Essen: keyword field matched -> label 'Suchbegriffe'")
         except Exception:
             pass
-    logger.info(f"  Essen: keyword field filled = {filled}")
     if not filled:
         raise Exception("Could not find keyword input for Essen")
 
     # ── Native date fields: first = von, second = bis (ISO) ──
     date_inputs = await page.locator('input[type="date"]').all()
-    logger.info(f"  Essen: found {len(date_inputs)} date input(s)")
     if len(date_inputs) >= 1:
         try:
             await date_inputs[0].fill(von_iso)
-        except Exception as e:
-            logger.info(f"  Essen: could not fill 'von': {str(e)[:80]}")
+        except Exception:
+            pass
     if len(date_inputs) >= 2:
         try:
             await date_inputs[1].fill(bis_iso)
-        except Exception as e:
-            logger.info(f"  Essen: could not fill 'bis': {str(e)[:80]}")
+        except Exception:
+            pass
 
     if debug:
         await page.screenshot(path="debug_Essen_pre_search.png", full_page=True)
@@ -741,11 +737,9 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
             if await loc.count() > 0:
                 await loc.click()
                 clicked = True
-                logger.info(f"  Essen: search button matched -> {sel}")
                 break
         except Exception:
             continue
-    logger.info(f"  Essen: search button clicked = {clicked}")
     if not clicked:
         raise Exception("Could not find the 'Anzeigen' button for Essen")
 
@@ -755,19 +749,11 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     if debug:
         await page.screenshot(path="debug_Essen_results.png", full_page=True)
 
-    # ══════════ EXTRACTION via URL-path grouping (crash-proof) ══════════
-    base_host = urlparse(city["url"]).netloc
-
-    def clean_title(txt: str) -> str:
-        if not txt:
-            return "(ohne Titel)"
-        t = re.sub(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}", "", txt)
-        t = re.sub(r"\d{2}:\d{2}\s*Uhr", "", t)
-        t = re.sub(r"\s{2,}", " ", t).strip(" -–|,")
-        return (t or "(ohne Titel)")[:200]
-
-    # Collect same-host anchors safely
-    anchors = []
+    # ── Extraction: capture EVERY result document. They live under BOTH
+    #    '/vorgang/' (Vorlagen + Anlagen) and '/tops/' (Einladung/meeting).
+    #    Dedupe by URL, keep the longest (most descriptive) anchor text. ──
+    DOC_PATHS = ("/vorgang/", "/tops/")
+    best = {}   # url -> best title text seen for that url
     for a in await page.locator("a[href]").all():
         try:
             raw = await a.inner_text()
@@ -781,94 +767,28 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
         if hl in ("", "#") or hl.startswith("javascript") or hl.startswith("mailto"):
             continue
         full = urljoin(city["url"], h)
-        if urlparse(full).netloc != base_host:
+        if not any(p in full for p in DOC_PATHS):
             continue
-        anchors.append((t, full))
+        if full not in best or len(t) > len(best[full]):
+            best[full] = t
 
-    # Group by URL path; track DISTINCT urls per path
-    groups = {}
-    for (t, full) in anchors:
-        path = urlparse(full).path or "/"
-        g = groups.setdefault(path, {"items": [], "urls": set()})
-        g["items"].append((t, full))
-        g["urls"].add(full)
+    def clean(txt: str) -> str:
+        t = re.sub(r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}", "", txt or "")
+        t = re.sub(r"\d{2}:\d{2}\s*Uhr", "", t)
+        t = re.sub(r"\s{2,}", " ", t).strip(" -–|,")
+        return (t or "(ohne Titel)")[:200]
 
-    logger.info(f"  Essen: {len(anchors)} same-host anchor(s) in {len(groups)} path group(s)")
-    for path, g in sorted(groups.items(), key=lambda x: -len(x[1]["urls"]))[:12]:
-        sample = next((it[0] for it in g["items"] if it[0]), "")
-        logger.info(f"  Essen: path {path} -> {len(g['items'])} link(s), "
-                    f"{len(g['urls'])} unique  e.g. [{sample[:40]}]")
+    results = [{"title": clean(t), "url": url} for url, t in best.items()]
 
-    # Choose the document path
-    NAV = {"/recherche", "/recherche/", "/", "/start", "/start/", "/info", "/info/",
-           "/personen", "/personen/", "/gremien", "/gremien/", "/fraktionen",
-           "/fraktionen/", "/vorlagen", "/vorlagen/", "/news", "/news/",
-           "/tops", "/tops/"}
-    EXCLUDE_SUBSTR = ("getfile", "download", "anlage", "/to0", "kalender")
-
-    def eligible(path):
-        pl = path.lower()
-        if pl in NAV:
-            return False
-        if any(s in pl for s in EXCLUDE_SUBSTR):
-            return False
-        return True
-
-    doc_path = None
-    # 1) Prefer Sternberg document-detail patterns with 2+ distinct urls
-    for path, g in sorted(groups.items(), key=lambda x: -len(x[1]["urls"])):
-        pl = path.lower()
-        if eligible(path) and len(g["urls"]) >= 2 and \
-           any(k in pl for k in ("/vo", "/vorgang", "/to020", "/si", "/do")):
-            doc_path = path
-            break
-    # 2) Else: the eligible path with the MOST distinct urls
-    if doc_path is None:
-        for path, g in sorted(groups.items(), key=lambda x: -len(x[1]["urls"])):
-            if eligible(path) and len(g["urls"]) >= 2:
-                doc_path = path
-                break
-
-    results, seen = [], set()
-    if doc_path:
-        logger.info(f"  Essen: using document path -> {doc_path} "
-                    f"({len(groups[doc_path]['urls'])} unique)")
-        # Pair each doc link with its table-row text for a good title
-        for row in await page.locator("tr").all():
-            try:
-                row_txt = " ".join((await row.inner_text()).split())
-            except Exception:
-                row_txt = ""
-            found = None
-            for a in await row.locator("a[href]").all():
-                try:
-                    h = await a.get_attribute("href")
-                except Exception:
-                    continue
-                if not h:
-                    continue
-                full = urljoin(city["url"], h)
-                if urlparse(full).path == doc_path and urlparse(full).netloc == base_host:
-                    found = full
-                    break
-            if found and found not in seen:
-                seen.add(found)
-                results.append({"title": clean_title(row_txt), "url": found})
-        # Add any doc links that were not inside a <tr>
-        for (t, full) in groups[doc_path]["items"]:
-            if full not in seen:
-                seen.add(full)
-                results.append({"title": clean_title(t), "url": full})
-
-    logger.info(f"  Essen: grouped extraction kept {len(results)}")
-    for r in results[:15]:
+    logger.info(f"  Essen: extracted {len(results)} document(s)")
+    for r in results:
         logger.info(f"  Essen: kept -> {r['title'][:70]}")
 
+    # Safety net: layout change -> generic reader
     if not results:
-        logger.info("  Essen: grouping empty — falling back to generic extractor")
+        logger.info("  Essen: no document links — falling back to generic extractor")
         results = await _extract_results(page, city["url"])
 
-    logger.info(f"  Essen: extracted {len(results)} result(s) from {page.url}")
     return results
 
 

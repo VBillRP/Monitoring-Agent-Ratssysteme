@@ -1013,7 +1013,7 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
 
     # ⚠️ TEST LINE — forces a wide window so multiple pages appear.
     #    Put a '#' at the START of the next line once pagination is confirmed.
-    window_start = "2026-06-01"
+    # window_start = "2026-06-01"
 
     window_end = today.strftime("%Y-%m-%d")
     logger.info(f"  Leipzig: date window {window_start} .. {window_end}")

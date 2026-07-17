@@ -990,24 +990,21 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE: LEIPZIG (AllRIS vo040)
-#  1. Fill the keyword box next to the "Alle Textfelder" dropdown
-#     (NOT the "Nummer" box, which comes first)
-#  2. Expand the "Zeitraum" panel, then set the native date
-#     fields "von" (=YESTERDAY) and "bis" (=TODAY)
+#  1. Fill keyword box (2nd text field; NOT "Nummer")
+#  2. Expand "Zeitraum", set von=YESTERDAY / bis=TODAY
 #  3. Click "Anzeigen"
+#  4. Read result table, then click through ALL result pages
 # ═══════════════════════════════════════════════════════════
 async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
-    """Leipzig AllRIS: keyword box + expandable 'Zeitraum' + 'Anzeigen'."""
+    """Leipzig AllRIS: keyword + date search, with pagination."""
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # AllRIS full-text supports the OR operator "ODER"
+    # AllRIS full-text: OR operator is "ODER"
     keywords_str = " ODER ".join(KEYWORDS)
 
-    # ── Step 1: Fill the full-text keyword box ──
-    # This is the 2nd text field on the page. The 1st is "Nummer",
-    # which we must NOT touch.
+    # ── Step 1: keyword box = 2nd text field (1st is "Nummer") ──
     filled = False
     try:
         boxes = page.locator('input[type="text"]:visible')
@@ -1016,20 +1013,16 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
             filled = True
     except Exception:
         pass
-
-    # Fallback via common AllRIS field names
     if not filled:
         filled = await _try_fill(page, [
-            'input[name="suchbegriffe"]',
             'input[name*="suchbegriff" i]',
             'input[name="txt_suche"]',
             'input[name*="such" i][type="text"]',
         ], keywords_str)
-
     if not filled:
         raise Exception("Could not find the keyword search field (Leipzig)")
 
-    # ── Step 2: Expand the "Zeitraum" panel ──
+    # ── Step 2: expand "Zeitraum" + set dates ──
     await _try_click(page, [
         'a:has-text("Aktueller Zeitraum")',
         'div:has-text("Aktueller Zeitraum")',
@@ -1038,9 +1031,6 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
     ])
     await page.wait_for_timeout(1000)
 
-    # ── Step 3: Set the two native date fields ──
-    # These are <input type="date"> → send ISO format.
-    # "von" = first date field, "bis" = second date field.
     date_set = False
     try:
         dates = page.locator('input[type="date"]:visible')
@@ -1050,21 +1040,18 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
             date_set = True
     except Exception:
         pass
-
-    # Fallback via field names
     if not date_set:
         await _try_fill_date(page, [
-            'input[name*="von" i]', 'input[name*="from" i]',
-            'input[type="date"]',
+            'input[name*="von" i]', 'input[type="date"]',
         ], YESTERDAY_DE, YESTERDAY_ISO)
         await _try_fill_date(page, [
-            'input[name*="bis" i]', 'input[name*="to" i]',
+            'input[name*="bis" i]',
         ], TODAY_DE, TODAY_ISO)
 
     if debug:
         await page.screenshot(path="debug_Leipzig_pre_search.png", full_page=True)
 
-    # ── Step 4: Click "Anzeigen" ──
+    # ── Step 3: click "Anzeigen" ──
     clicked = await _try_click(page, [
         'input[value="Anzeigen"]',
         'input[type="submit"][value*="Anzeigen" i]',
@@ -1073,14 +1060,54 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
     ])
     if not clicked:
         raise Exception("Could not click 'Anzeigen' for Leipzig")
-
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
 
-    if debug:
-        await page.screenshot(path="debug_Leipzig_results.png", full_page=True)
+    # ── Step 4: read table + walk through ALL pages ──
+    results = []
+    seen = set()
+    MAX_PAGES = 20   # safety cap against infinite loops
 
-    return await _extract_results(page, city["url"])
+    for page_num in range(1, MAX_PAGES + 1):
+        if debug:
+            await page.screenshot(
+                path=f"debug_Leipzig_results_p{page_num}.png", full_page=True
+            )
+
+        # Extract links from TABLE CELLS only (skips menu + footer)
+        try:
+            links = page.locator("td a")
+            count = await links.count()
+            for i in range(count):
+                a = links.nth(i)
+                href = await a.get_attribute("href")
+                title = (await a.inner_text()).strip()
+                if not href or not title:
+                    continue
+                if title.isdigit() or len(title) < 4:   # skip page numbers
+                    continue
+                url = urljoin(city["url"], href)
+                if url in seen:
+                    continue
+                seen.add(url)
+                results.append({"title": title[:200], "url": url})
+        except Exception as e:
+            logger.warning(f"  Leipzig extraction issue (page {page_num}): {e}")
+
+        # Find the "next page" arrow. Stop if there is none.
+        next_link = page.locator(
+            'a[title*="nächste" i], a[title*="vor" i], a:has-text("▸"), a:has-text(">")'
+        ).first
+        try:
+            if await next_link.count() == 0 or not await next_link.is_visible():
+                break
+            await next_link.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+        except Exception:
+            break   # no more pages
+
+    return results
  
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers

@@ -661,7 +661,8 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
-    """Essen: keywords use ' O ' as the OR separator."""
+    """Essen: RIS 'Recherche' form. Keyword box labelled 'Suchbegriffe',
+    two native date inputs, search button 'Anzeigen'. ' O ' = OR separator."""
     from datetime import datetime, timedelta
 
     await page.goto(city["url"], wait_until="domcontentloaded")
@@ -672,45 +673,78 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     today = datetime.now()
     days_back = 3 if today.weekday() == 0 else 1
     yday = today - timedelta(days=days_back)
-    von_de, von_iso = yday.strftime("%d.%m.%Y"), yday.strftime("%Y-%m-%d")
-    bis_de, bis_iso = today.strftime("%d.%m.%Y"), today.strftime("%Y-%m-%d")
-    logger.info(f"  Essen: date window {von_de} .. {bis_de}")
+    von_iso = yday.strftime("%Y-%m-%d")
+    bis_iso = today.strftime("%Y-%m-%d")
+    logger.info(f"  Essen: date window {von_iso} .. {bis_iso}")
 
-    # ── Keyword box (OR via ' O ' tokens) ──
     keywords_str = " O ".join(KEYWORDS)
-    filled = await _try_fill(page, [
-        'input[name*="such" i]',
-        'textarea[name*="such" i]',
-        'input[name*="volltext" i]',
-        'input[name*="wort" i]',
-        'input[type="search"]',
-        'input[type="text"]',          # generic fallback LAST, so it can't win over the real box
-    ], keywords_str)
+
+    # ── Keyword box: the FORM field (placeholder 'Suchbegriffe').
+    #    NOT the sidebar global-search box ('Suchbegriff eingeben ...').
+    filled = False
+    for sel in [
+        'input[placeholder="Suchbegriffe"]',
+        'input[name="suchbegriffe"]',
+        '#suchbegriffe',
+        'input[name*="begriff" i]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                await loc.fill(keywords_str)
+                filled = True
+                logger.info(f"  Essen: keyword field matched -> {sel}")
+                break
+        except Exception:
+            continue
+    if not filled:
+        try:
+            await page.get_by_label("Suchbegriffe", exact=False).first.fill(keywords_str)
+            filled = True
+            logger.info("  Essen: keyword field matched -> label 'Suchbegriffe'")
+        except Exception:
+            pass
     logger.info(f"  Essen: keyword field filled = {filled}")
     if not filled:
         raise Exception("Could not find keyword input for Essen")
 
-    # ── Dates (robust: handles native <input type=date> AND text fields) ──
-    await _try_fill_date(page, [
-        'input[name*="freigabevon" i]', 'input[name*="von" i][size]',
-        'input[name*="von" i]', 'input[name*="datumvon" i]',
-    ], von_de, von_iso)
-    await _try_fill_date(page, [
-        'input[name*="freigabebis" i]', 'input[name*="bis" i][size]',
-        'input[name*="bis" i]', 'input[name*="datumbis" i]',
-    ], bis_de, bis_iso)
+    # ── Native <input type="date"> fields: first = von, second = bis (ISO) ──
+    date_inputs = await page.locator('input[type="date"]').all()
+    logger.info(f"  Essen: found {len(date_inputs)} date input(s)")
+    if len(date_inputs) >= 1:
+        try:
+            await date_inputs[0].fill(von_iso)
+        except Exception as e:
+            logger.info(f"  Essen: could not fill 'von': {str(e)[:80]}")
+    if len(date_inputs) >= 2:
+        try:
+            await date_inputs[1].fill(bis_iso)
+        except Exception as e:
+            logger.info(f"  Essen: could not fill 'bis': {str(e)[:80]}")
 
     if debug:
         await page.screenshot(path="debug_Essen_pre_search.png", full_page=True)
 
-    clicked = await _try_click(page, [
-        'input[name="go"]',
-        'input[type="submit"][value*="uch" i]',
-        'button[type="submit"]:has-text("uch")',
-        'button[type="submit"]',
-        'input[type="submit"]',
-    ])
+    # ── Click 'Anzeigen' (NOT the sidebar 'Anmelden' login button) ──
+    clicked = False
+    for sel in [
+        'input[type="submit"][value="Anzeigen"]',
+        'input[type="submit"][value*="Anzeigen" i]',
+        'button:has-text("Anzeigen")',
+        'input[value*="Anzeigen" i]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                await loc.click()
+                clicked = True
+                logger.info(f"  Essen: search button matched -> {sel}")
+                break
+        except Exception:
+            continue
     logger.info(f"  Essen: search button clicked = {clicked}")
+    if not clicked:
+        raise Exception("Could not find the 'Anzeigen' button for Essen")
 
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)

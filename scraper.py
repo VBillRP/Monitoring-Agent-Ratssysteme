@@ -1004,7 +1004,7 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
     # ── Compute date window (Monday reaches back to Friday) ──
     now = datetime.now()
     days_back = 3 if now.weekday() == 0 else 1   # Monday = 0
-    window_start = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    window_start = "2026-06-01"   # TEST: weites Fenster, erzwingt mehrere Seiten
     today_iso = now.strftime("%Y-%m-%d")
     logger.info(f"  Leipzig: date window {window_start} .. {today_iso}")
 

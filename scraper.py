@@ -662,44 +662,65 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     """Essen: keywords use ' O ' as the OR separator."""
+    from datetime import datetime, timedelta
+
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # Join all keywords with " O " between them
-    keywords_str = " O ".join(KEYWORDS)
+    # ── Date window: yesterday .. today (Monday reaches back to Friday) ──
+    today = datetime.now()
+    days_back = 3 if today.weekday() == 0 else 1
+    yday = today - timedelta(days=days_back)
+    von_de, von_iso = yday.strftime("%d.%m.%Y"), yday.strftime("%Y-%m-%d")
+    bis_de, bis_iso = today.strftime("%d.%m.%Y"), today.strftime("%Y-%m-%d")
+    logger.info(f"  Essen: date window {von_de} .. {bis_de}")
 
+    # ── Keyword box (OR via ' O ' tokens) ──
+    keywords_str = " O ".join(KEYWORDS)
     filled = await _try_fill(page, [
         'input[name*="such" i]',
         'textarea[name*="such" i]',
         'input[name*="volltext" i]',
-        'input[type="text"]',
+        'input[name*="wort" i]',
         'input[type="search"]',
+        'input[type="text"]',          # generic fallback LAST, so it can't win over the real box
     ], keywords_str)
-
+    logger.info(f"  Essen: keyword field filled = {filled}")
     if not filled:
         raise Exception("Could not find keyword input for Essen")
 
-    # Set dates
-    await _try_fill(page, [
+    # ── Dates (robust: handles native <input type=date> AND text fields) ──
+    await _try_fill_date(page, [
         'input[name*="freigabevon" i]', 'input[name*="von" i][size]',
-   ], YESTERDAY_DE)
-    await _try_fill(page, [
+        'input[name*="von" i]', 'input[name*="datumvon" i]',
+    ], von_de, von_iso)
+    await _try_fill_date(page, [
         'input[name*="freigabebis" i]', 'input[name*="bis" i][size]',
-    ], TODAY_DE)
+        'input[name*="bis" i]', 'input[name*="datumbis" i]',
+    ], bis_de, bis_iso)
 
     if debug:
         await page.screenshot(path="debug_Essen_pre_search.png", full_page=True)
 
-    await _try_click(page, [
+    clicked = await _try_click(page, [
+        'input[name="go"]',
         'input[type="submit"][value*="uch" i]',
+        'button[type="submit"]:has-text("uch")',
         'button[type="submit"]',
         'input[type="submit"]',
     ])
+    logger.info(f"  Essen: search button clicked = {clicked}")
 
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
-    return await _extract_results(page, city["url"])
+
+    if debug:
+        await page.screenshot(path="debug_Essen_results.png", full_page=True)
+
+    results = await _extract_results(page, city["url"])
+    logger.info(f"  Essen: extracted {len(results)} result(s) from {page.url}")
+    return results
 
 
 # ═══════════════════════════════════════════════════════════

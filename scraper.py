@@ -987,6 +987,101 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
             seen.add(r["url"])
             unique.append(r)
     return unique
+
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE: LEIPZIG (AllRIS vo040)
+#  1. Fill the keyword box next to the "Alle Textfelder" dropdown
+#     (NOT the "Nummer" box, which comes first)
+#  2. Expand the "Zeitraum" panel, then set the native date
+#     fields "von" (=YESTERDAY) and "bis" (=TODAY)
+#  3. Click "Anzeigen"
+# ═══════════════════════════════════════════════════════════
+async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
+    """Leipzig AllRIS: keyword box + expandable 'Zeitraum' + 'Anzeigen'."""
+    await page.goto(city["url"], wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # AllRIS full-text supports the OR operator "ODER"
+    keywords_str = " ODER ".join(KEYWORDS)
+
+    # ── Step 1: Fill the full-text keyword box ──
+    # This is the 2nd text field on the page. The 1st is "Nummer",
+    # which we must NOT touch.
+    filled = False
+    try:
+        boxes = page.locator('input[type="text"]:visible')
+        if await boxes.count() >= 2:
+            await boxes.nth(1).fill(keywords_str)
+            filled = True
+    except Exception:
+        pass
+
+    # Fallback via common AllRIS field names
+    if not filled:
+        filled = await _try_fill(page, [
+            'input[name="suchbegriffe"]',
+            'input[name*="suchbegriff" i]',
+            'input[name="txt_suche"]',
+            'input[name*="such" i][type="text"]',
+        ], keywords_str)
+
+    if not filled:
+        raise Exception("Could not find the keyword search field (Leipzig)")
+
+    # ── Step 2: Expand the "Zeitraum" panel ──
+    await _try_click(page, [
+        'a:has-text("Aktueller Zeitraum")',
+        'div:has-text("Aktueller Zeitraum")',
+        'text=Aktueller Zeitraum',
+        'a:has-text("Zeitraum")',
+    ])
+    await page.wait_for_timeout(1000)
+
+    # ── Step 3: Set the two native date fields ──
+    # These are <input type="date"> → send ISO format.
+    # "von" = first date field, "bis" = second date field.
+    date_set = False
+    try:
+        dates = page.locator('input[type="date"]:visible')
+        if await dates.count() >= 2:
+            await dates.nth(0).fill(YESTERDAY_ISO)   # von
+            await dates.nth(1).fill(TODAY_ISO)       # bis
+            date_set = True
+    except Exception:
+        pass
+
+    # Fallback via field names
+    if not date_set:
+        await _try_fill_date(page, [
+            'input[name*="von" i]', 'input[name*="from" i]',
+            'input[type="date"]',
+        ], YESTERDAY_DE, YESTERDAY_ISO)
+        await _try_fill_date(page, [
+            'input[name*="bis" i]', 'input[name*="to" i]',
+        ], TODAY_DE, TODAY_ISO)
+
+    if debug:
+        await page.screenshot(path="debug_Leipzig_pre_search.png", full_page=True)
+
+    # ── Step 4: Click "Anzeigen" ──
+    clicked = await _try_click(page, [
+        'input[value="Anzeigen"]',
+        'input[type="submit"][value*="Anzeigen" i]',
+        'button:has-text("Anzeigen")',
+        'a:has-text("Anzeigen")',
+    ])
+    if not clicked:
+        raise Exception("Could not click 'Anzeigen' for Leipzig")
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+    if debug:
+        await page.screenshot(path="debug_Leipzig_results.png", full_page=True)
+
+    return await _extract_results(page, city["url"])
+ 
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers
 # ─────────────────────────────────────────────────────────
@@ -999,4 +1094,5 @@ _SCRAPER_MAP = {
     "hannover": _scrape_hannover,
     "stuttgart": _scrape_stuttgart,
     "frankfurt": _scrape_frankfurt,
+    "leipzig": _scrape_leipzig,
 }

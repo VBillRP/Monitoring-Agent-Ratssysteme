@@ -997,103 +997,120 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
 #  computes its own date window and logs what it sees.
 # ═══════════════════════════════════════════════════════════
 async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
-    """Leipzig AllRIS: read the pre-sorted list, keep rows in date window."""
-    from datetime import datetime, timedelta
+    """
+    Leipzig (AllRIS vo040) — form-free.
+    Table is pre-sorted by 'Vorlage freigegeben' DESC (newest first).
+    Read rows, keep those inside our date window, stop at the first older row.
+    If a full page (25 rows) is all in-window, page forward.
+    """
     import re
+    from datetime import datetime, timedelta
 
-    # ── Compute date window (Monday reaches back to Friday) ──
-    now = datetime.now()
-    days_back = 3 if now.weekday() == 0 else 1   # Monday = 0
-    window_start = "2026-06-01"   # TEST: weites Fenster, erzwingt mehrere Seiten
-    today_iso = now.strftime("%Y-%m-%d")
-    logger.info(f"  Leipzig: date window {window_start} .. {today_iso}")
+    # ── Date window ──
+    today = datetime.now()
+    days_back = 3 if today.weekday() == 0 else 1          # Monday reaches back to Friday
+    window_start = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    # ⚠️ TEST LINE — forces a wide window so multiple pages appear.
+    #    Put a '#' at the START of the next line once pagination is confirmed.
+    window_start = "2026-06-01"
+
+    window_end = today.strftime("%Y-%m-%d")
+    logger.info(f"  Leipzig: date window {window_start} .. {window_end}")
+
+    date_re = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
+
+    results = []
+    scanned = 0
+    stop = False
+    page_num = 1
+    MAX_PAGES = 20
 
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # A cell that is EXACTLY a date like "16.07.2026"
-    date_re = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
-
-    results = []
-    seen = set()
-    dated_rows = 0        # how many rows had a date cell (diagnostic)
-    MAX_PAGES = 20
-    stop = False
-
-    for page_num in range(1, MAX_PAGES + 1):
-        if debug:
-            await page.screenshot(
-                path=f"debug_Leipzig_p{page_num}.png", full_page=True
-            )
-
+    while page_num <= MAX_PAGES and not stop:
         rows = await page.locator("tr").all()
         for row in rows:
-            # Find the date cell in this row
-            row_iso = None
-            try:
-                cells = await row.locator("td").all()
-                for cell in cells:
-                    ct = (await cell.inner_text()).strip()
-                    m = date_re.match(ct)
-                    if m:
-                        d, mo, y = m.groups()
-                        row_iso = f"{y}-{mo}-{d}"
-                        break
-            except Exception:
-                continue
-
-            if not row_iso:
-                continue          # form row, header, pagination, etc.
-            dated_rows += 1
-
-            if row_iso < window_start:
-                stop = True       # everything below is older too
-                continue
-
-            # In window → grab the first link in the row (the Betreff)
-            try:
-                link = row.locator("td a").first
-                if await link.count() == 0:
+            cells = await row.locator("td").all()
+            row_date = None
+            for c in cells:
+                try:
+                    txt = (await c.inner_text()).strip()
+                except:
                     continue
-                href = await link.get_attribute("href")
-                title = (await link.inner_text()).strip()
-                if not href or not title:
-                    continue
-                url = urljoin(city["url"], href)
-                if url in seen:
-                    continue
-                seen.add(url)
-                results.append({"title": title[:200], "url": url})
-            except Exception:
+                m = date_re.match(txt)
+                if m:
+                    row_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+                    break
+            if row_date is None:
                 continue
+            scanned += 1
+            if row_date > window_end:
+                continue                      # future-dated, skip but keep scanning
+            if row_date < window_start:
+                stop = True                   # older than window -> everything below is older
+                break
+            # in window — pick the link with the most text (the Betreff)
+            links = await row.locator("a").all()
+            best, best_len = None, -1
+            for a in links:
+                try:
+                    t = (await a.inner_text()).strip()
+                    h = await a.get_attribute("href")
+                except:
+                    continue
+                if h and len(t) > best_len:
+                    best, best_len = (t, h), len(t)
+            if best:
+                results.append({"title": best[0], "url": urljoin(city["url"], best[1])})
+
+        logger.info(
+            f"  Leipzig: scanned {scanned} dated row(s), "
+            f"kept {len(results)} in window (page {page_num})"
+        )
 
         if stop:
-            break                 # reached older entries → done
-
-        # ── Next page (only needed if window didn't end on this page) ──
-        moved = False
-        try:
-            nxt = page.locator(
-                'a[title*="nächste" i], a[title*="weiter" i], '
-                'a[title*="vor" i], a:has-text("▸"), a:has-text("»")'
-            ).first
-            if await nxt.count() > 0 and await nxt.is_visible():
-                await nxt.click()
-                await page.wait_for_load_state("domcontentloaded")
-                await page.wait_for_timeout(PAGE_SETTLE_MS)
-                moved = True
-        except Exception:
-            pass
-        if not moved:
             break
 
-    logger.info(
-        f"  Leipzig: scanned {dated_rows} dated row(s), "
-        f"kept {len(results)} in window"
-    )
-    return results
+        # ── PAGINATION ──
+        next_page = str(page_num + 1)
 
+        # DIAGNOSTIC: log the real pagination links so we never have to guess again
+        candidates = []
+        for a in await page.locator("a").all():
+            try:
+                t = (await a.inner_text()).strip()
+                h = await a.get_attribute("href")
+            except:
+                continue
+            if t in (next_page, "»", "›", ">", "weiter", "nächste", "Weiter") \
+               or (t.isdigit() and h and "vo040" in h):
+                candidates.append((t, (h or "")[:80]))
+        if candidates:
+            logger.info(f"  Leipzig: pagination candidates -> {candidates[:8]}")
+        else:
+            logger.info("  Leipzig: no pagination links found — stopping")
+            break
+
+        # Robust attempt: click the page NUMBER (e.g. '2'), not the arrow
+        clicked = False
+        try:
+            await page.get_by_role("link", name=next_page, exact=True).first.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+            clicked = True
+        except Exception as e:
+            logger.info(f"  Leipzig: could not click page {next_page}: {str(e)[:120]}")
+
+        if not clicked:
+            break
+        page_num += 1
+
+    logger.info(f"  Leipzig: {len(results)} result(s) total")
+    return results
+ 
 
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers

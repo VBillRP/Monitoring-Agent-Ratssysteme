@@ -56,7 +56,7 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: python main.py --city Leipzig --debug
+        run: python main.py
 
       # Step 6: Save debug screenshots if they were created
       - name: Upload debug screenshots

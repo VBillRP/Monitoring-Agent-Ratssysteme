@@ -990,28 +990,35 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE: LEIPZIG (AllRIS vo040)
-#  The default list is already sorted newest-first by
-#  "Vorlage freigegeben". We DON'T touch the search form at all.
-#  Instead we read each table row, take the date from the
-#  "Vorlage freigegeben" cell, keep only rows in our window
-#  (yesterday..today and newer), and page forward until we hit
-#  an older row (then stop). Relevance is handled by the LLM.
+#  The default list is already sorted newest-first. We do NOT
+#  touch the search form. We read each table row, take the date
+#  from the row's date cell, keep rows within our window, and
+#  stop as soon as we reach an older row. Self-contained: it
+#  computes its own date window and logs what it sees.
 # ═══════════════════════════════════════════════════════════
 async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
     """Leipzig AllRIS: read the pre-sorted list, keep rows in date window."""
+    from datetime import datetime, timedelta
     import re
+
+    # ── Compute date window (Monday reaches back to Friday) ──
+    now = datetime.now()
+    days_back = 3 if now.weekday() == 0 else 1   # Monday = 0
+    window_start = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    today_iso = now.strftime("%Y-%m-%d")
+    logger.info(f"  Leipzig: date window {window_start} .. {today_iso}")
 
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # Full date like "16.07.2026" — must be the WHOLE cell text,
-    # so we don't accidentally grab a date embedded in a title.
-    full_date = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
+    # A cell that is EXACTLY a date like "16.07.2026"
+    date_re = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
 
     results = []
     seen = set()
-    MAX_PAGES = 20   # safety cap
+    dated_rows = 0        # how many rows had a date cell (diagnostic)
+    MAX_PAGES = 20
     stop = False
 
     for page_num in range(1, MAX_PAGES + 1):
@@ -1020,36 +1027,31 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
                 path=f"debug_Leipzig_p{page_num}.png", full_page=True
             )
 
-        rows = page.locator("table tr")
-        row_count = await rows.count()
-
-        for r in range(row_count):
-            row = rows.nth(r)
-
-            # Find the cell that is EXACTLY a date → the freigegeben date
+        rows = await page.locator("tr").all()
+        for row in rows:
+            # Find the date cell in this row
             row_iso = None
             try:
-                cells = row.locator("td")
-                cc = await cells.count()
-                for c in range(cc):
-                    ct = (await cells.nth(c).inner_text()).strip()
-                    m = full_date.match(ct)
+                cells = await row.locator("td").all()
+                for cell in cells:
+                    ct = (await cell.inner_text()).strip()
+                    m = date_re.match(ct)
                     if m:
                         d, mo, y = m.groups()
                         row_iso = f"{y}-{mo}-{d}"
                         break
             except Exception:
-                pass
-
-            if not row_iso:
-                continue   # header row, pagination row, etc.
-
-            # Older than our window → everything below is older too.
-            if row_iso < YESTERDAY_ISO:
-                stop = True
                 continue
 
-            # In window (yesterday, today, or newer) → keep the link
+            if not row_iso:
+                continue          # form row, header, pagination, etc.
+            dated_rows += 1
+
+            if row_iso < window_start:
+                stop = True       # everything below is older too
+                continue
+
+            # In window → grab the first link in the row (the Betreff)
             try:
                 link = row.locator("td a").first
                 if await link.count() == 0:
@@ -1067,11 +1069,10 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
                 continue
 
         if stop:
-            break   # reached older entries → no need to page further
+            break                 # reached older entries → done
 
-        # ── Go to the next result page ──
+        # ── Next page (only needed if window didn't end on this page) ──
         moved = False
-        # Try a "next" arrow first, then the explicit page number link.
         try:
             nxt = page.locator(
                 'a[title*="nächste" i], a[title*="weiter" i], '
@@ -1079,24 +1080,18 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
             ).first
             if await nxt.count() > 0 and await nxt.is_visible():
                 await nxt.click()
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(PAGE_SETTLE_MS)
                 moved = True
         except Exception:
             pass
         if not moved:
-            try:
-                num = page.locator(f'a:has-text("{page_num + 1}")').first
-                if await num.count() > 0 and await num.is_visible():
-                    await num.click()
-                    moved = True
-            except Exception:
-                pass
-        if not moved:
-            break   # no further pages
+            break
 
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(PAGE_SETTLE_MS)
-
-    logger.info(f"  Leipzig: {len(results)} document(s) in date window")
+    logger.info(
+        f"  Leipzig: scanned {dated_rows} dated row(s), "
+        f"kept {len(results)} in window"
+    )
     return results
 
 

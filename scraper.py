@@ -662,7 +662,9 @@ async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
 
 async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     """Essen: RIS 'Recherche' form. Keyword box 'Suchbegriffe', two native
-    date inputs, search button 'Anzeigen'. ' O ' = OR separator."""
+    date inputs, search button 'Anzeigen'. ' O ' = OR separator.
+    Each real document ROW carries exactly one weekday-date LINK
+    (e.g. 'Do, 16.07.2026 17:33 Uhr') that opens the document."""
     import re
     from datetime import datetime, timedelta
 
@@ -680,7 +682,7 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
 
     keywords_str = " O ".join(KEYWORDS)
 
-    # ── Keyword box: the FORM field (placeholder 'Suchbegriffe'). ──
+    # ── Keyword box: the FORM field ('Suchbegriffe'), not the sidebar box ──
     filled = False
     for sel in [
         'input[placeholder="Suchbegriffe"]',
@@ -752,53 +754,55 @@ async def _scrape_essen(page: Page, city: dict, debug: bool) -> list:
     if debug:
         await page.screenshot(path="debug_Essen_results.png", full_page=True)
 
-    # ── Essen-specific extraction (inclusive + diagnostic) ──
-    #    URL-based dedup (keeps same-title rows), blacklist only obvious
-    #    non-documents. Logs every kept/dropped link for full visibility.
+    # ── Row-based extraction: keep leaf rows with EXACTLY one weekday-date ──
+    date_pat = re.compile(
+        r"(?:Mo|Di|Mi|Do|Fr|Sa|So),\s*\d{2}\.\d{2}\.\d{4}(?:\s*\d{2}:\d{2}\s*Uhr)?"
+    )
     results = []
     seen = set()
-    kept_log, drop_log = [], []
+    kept_log = []
 
-    NAV = {
-        "startseite", "news", "gremien", "fraktionen", "personen", "vorlagen",
-        "sitzungskalender", "recherche", "kontakt", "impressum", "sitemap",
-        "barrierefreiheit", "zurück", "anmelden", "kennwort vergessen?",
-        "optionen einblenden", "anzeigen", "pressemeldungen", "newsletterservice",
-        "veranstaltungen", "stadtplan", "aktuell", "leben in essen",
-        "gesundheit", "kultur und bildung", "tourismus", "wirtschaft", "rathaus",
-        "ratsinformationssystem", "essen.de",
-    }
-
-    for a in await page.locator("a[href]").all():
+    for row in await page.locator("tr").all():
         try:
-            text = " ".join((await a.inner_text()).split())
-            href = await a.get_attribute("href")
+            txt = " ".join((await row.inner_text()).split())
         except Exception:
             continue
-        if not href or not text:
+        # only leaf document rows carry exactly one document date
+        if len(date_pat.findall(txt)) != 1:
             continue
-        low = text.lower()
-        if len(text) < 12:
-            drop_log.append((text[:30], "too-short")); continue
-        if re.match(r"^(Mo|Di|Mi|Do|Fr|Sa|So),", text):
-            drop_log.append((text[:30], "date-link")); continue
-        if low in NAV:
-            drop_log.append((text[:30], "nav")); continue
+        # pick the link: prefer the date-link (opens the doc), else first link
+        href = None
+        for a in await row.locator("a[href]").all():
+            try:
+                t = " ".join((await a.inner_text()).split())
+                h = await a.get_attribute("href")
+            except Exception:
+                continue
+            if not h or "javascript" in h.lower():
+                continue
+            if date_pat.search(t):
+                href = h
+                break
+            if href is None:
+                href = h
+        if not href:
+            continue
         full = urljoin(city["url"], href)
         if full in seen:
             continue
         seen.add(full)
-        results.append({"title": text, "url": full})
-        kept_log.append(text[:55])
+        title = date_pat.sub("", txt).strip(" -–|")
+        title = re.sub(r"\s{2,}", " ", title)[:200] or "(ohne Titel)"
+        results.append({"title": title, "url": full})
+        kept_log.append(title[:70])
 
-    logger.info(f"  Essen: extraction kept {len(results)}, dropped {len(drop_log)}")
+    logger.info(f"  Essen: table extraction kept {len(results)} document row(s)")
     for k in kept_log:
         logger.info(f"  Essen: kept -> {k}")
-    for d in drop_log[:20]:
-        logger.info(f"  Essen: dropped -> {d}")
 
+    # Safety net: if the table read finds nothing, use the generic extractor
     if not results:
-        logger.info("  Essen: inclusive pass empty — falling back to generic extractor")
+        logger.info("  Essen: table read empty — falling back to generic extractor")
         results = await _extract_results(page, city["url"])
 
     logger.info(f"  Essen: extracted {len(results)} result(s) from {page.url}")

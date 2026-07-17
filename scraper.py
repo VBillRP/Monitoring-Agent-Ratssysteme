@@ -990,125 +990,116 @@ async def _scrape_berlin(page: Page, city: dict, debug: bool) -> list:
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE: LEIPZIG (AllRIS vo040)
-#  1. Fill keyword box (2nd text field; NOT "Nummer")
-#  2. Expand "Zeitraum", set von=YESTERDAY / bis=TODAY
-#  3. Click "Anzeigen"
-#  4. Read result table, then click through ALL result pages
+#  The default list is already sorted newest-first by
+#  "Vorlage freigegeben". We DON'T touch the search form at all.
+#  Instead we read each table row, take the date from the
+#  "Vorlage freigegeben" cell, keep only rows in our window
+#  (yesterday..today and newer), and page forward until we hit
+#  an older row (then stop). Relevance is handled by the LLM.
 # ═══════════════════════════════════════════════════════════
 async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
-    """Leipzig AllRIS: keyword + date search, with pagination."""
+    """Leipzig AllRIS: read the pre-sorted list, keep rows in date window."""
+    import re
+
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # AllRIS full-text: OR operator is "ODER"
-    keywords_str = " ODER ".join(KEYWORDS)
+    # Full date like "16.07.2026" — must be the WHOLE cell text,
+    # so we don't accidentally grab a date embedded in a title.
+    full_date = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
 
-    # ── Step 1: keyword box = 2nd text field (1st is "Nummer") ──
-    filled = False
-    try:
-        boxes = page.locator('input[type="text"]:visible')
-        if await boxes.count() >= 2:
-            await boxes.nth(1).fill(keywords_str)
-            filled = True
-    except Exception:
-        pass
-    if not filled:
-        filled = await _try_fill(page, [
-            'input[name*="suchbegriff" i]',
-            'input[name="txt_suche"]',
-            'input[name*="such" i][type="text"]',
-        ], keywords_str)
-    if not filled:
-        raise Exception("Could not find the keyword search field (Leipzig)")
-
-    # ── Step 2: expand "Zeitraum" + set dates ──
-    await _try_click(page, [
-        'a:has-text("Aktueller Zeitraum")',
-        'div:has-text("Aktueller Zeitraum")',
-        'text=Aktueller Zeitraum',
-        'a:has-text("Zeitraum")',
-    ])
-    await page.wait_for_timeout(1000)
-
-    date_set = False
-    try:
-        dates = page.locator('input[type="date"]:visible')
-        if await dates.count() >= 2:
-            await dates.nth(0).fill(YESTERDAY_ISO)   # von
-            await dates.nth(1).fill(TODAY_ISO)       # bis
-            date_set = True
-    except Exception:
-        pass
-    if not date_set:
-        await _try_fill_date(page, [
-            'input[name*="von" i]', 'input[type="date"]',
-        ], YESTERDAY_DE, YESTERDAY_ISO)
-        await _try_fill_date(page, [
-            'input[name*="bis" i]',
-        ], TODAY_DE, TODAY_ISO)
-
-    if debug:
-        await page.screenshot(path="debug_Leipzig_pre_search.png", full_page=True)
-
-    # ── Step 3: click "Anzeigen" ──
-    clicked = await _try_click(page, [
-        'input[value="Anzeigen"]',
-        'input[type="submit"][value*="Anzeigen" i]',
-        'button:has-text("Anzeigen")',
-        'a:has-text("Anzeigen")',
-    ])
-    if not clicked:
-        raise Exception("Could not click 'Anzeigen' for Leipzig")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(PAGE_SETTLE_MS)
-
-    # ── Step 4: read table + walk through ALL pages ──
     results = []
     seen = set()
-    MAX_PAGES = 20   # safety cap against infinite loops
+    MAX_PAGES = 20   # safety cap
+    stop = False
 
     for page_num in range(1, MAX_PAGES + 1):
         if debug:
             await page.screenshot(
-                path=f"debug_Leipzig_results_p{page_num}.png", full_page=True
+                path=f"debug_Leipzig_p{page_num}.png", full_page=True
             )
 
-        # Extract links from TABLE CELLS only (skips menu + footer)
-        try:
-            links = page.locator("td a")
-            count = await links.count()
-            for i in range(count):
-                a = links.nth(i)
-                href = await a.get_attribute("href")
-                title = (await a.inner_text()).strip()
-                if not href or not title:
+        rows = page.locator("table tr")
+        row_count = await rows.count()
+
+        for r in range(row_count):
+            row = rows.nth(r)
+
+            # Find the cell that is EXACTLY a date → the freigegeben date
+            row_iso = None
+            try:
+                cells = row.locator("td")
+                cc = await cells.count()
+                for c in range(cc):
+                    ct = (await cells.nth(c).inner_text()).strip()
+                    m = full_date.match(ct)
+                    if m:
+                        d, mo, y = m.groups()
+                        row_iso = f"{y}-{mo}-{d}"
+                        break
+            except Exception:
+                pass
+
+            if not row_iso:
+                continue   # header row, pagination row, etc.
+
+            # Older than our window → everything below is older too.
+            if row_iso < YESTERDAY_ISO:
+                stop = True
+                continue
+
+            # In window (yesterday, today, or newer) → keep the link
+            try:
+                link = row.locator("td a").first
+                if await link.count() == 0:
                     continue
-                if title.isdigit() or len(title) < 4:   # skip page numbers
+                href = await link.get_attribute("href")
+                title = (await link.inner_text()).strip()
+                if not href or not title:
                     continue
                 url = urljoin(city["url"], href)
                 if url in seen:
                     continue
                 seen.add(url)
                 results.append({"title": title[:200], "url": url})
-        except Exception as e:
-            logger.warning(f"  Leipzig extraction issue (page {page_num}): {e}")
+            except Exception:
+                continue
 
-        # Find the "next page" arrow. Stop if there is none.
-        next_link = page.locator(
-            'a[title*="nächste" i], a[title*="vor" i], a:has-text("▸"), a:has-text(">")'
-        ).first
+        if stop:
+            break   # reached older entries → no need to page further
+
+        # ── Go to the next result page ──
+        moved = False
+        # Try a "next" arrow first, then the explicit page number link.
         try:
-            if await next_link.count() == 0 or not await next_link.is_visible():
-                break
-            await next_link.click()
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(PAGE_SETTLE_MS)
+            nxt = page.locator(
+                'a[title*="nächste" i], a[title*="weiter" i], '
+                'a[title*="vor" i], a:has-text("▸"), a:has-text("»")'
+            ).first
+            if await nxt.count() > 0 and await nxt.is_visible():
+                await nxt.click()
+                moved = True
         except Exception:
-            break   # no more pages
+            pass
+        if not moved:
+            try:
+                num = page.locator(f'a:has-text("{page_num + 1}")').first
+                if await num.count() > 0 and await num.is_visible():
+                    await num.click()
+                    moved = True
+            except Exception:
+                pass
+        if not moved:
+            break   # no further pages
 
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+    logger.info(f"  Leipzig: {len(results)} document(s) in date window")
     return results
- 
+
+
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers
 # ─────────────────────────────────────────────────────────

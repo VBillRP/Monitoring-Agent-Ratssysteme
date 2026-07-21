@@ -133,7 +133,7 @@ async def run_all_scrapers(cities: list, debug: bool = False) -> list:
 async def _dismiss_cookies(page: Page):
     """
     Many German sites show a GDPR cookie banner.
-    This tries to click "Accept" so we can access the actual page.
+    This tries to  "Accept" so we can access the actual page.
     """
     accept_texts = [
         "Alle akzeptieren", "Akzeptieren", "Zustimmen",
@@ -574,29 +574,49 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
-    """Click the reveal button first, then do standard search."""
+    """
+    Düsseldorf (SessionNet).
+    WICHTIG: Die konfigurierte URL landet auf der ÜBERSICHTS-Seite
+    ('Aktuelle Sitzungen'), NICHT auf dem Suchformular. Deshalb schlug
+    die Suche nach 'Rechercheauswahl anzeigen' fehl – der Button ist
+    auf dieser Seite gar nicht vorhanden.
+    Ablauf: erst 'Recherche' im linken Menue oeffnen, dann suchen.
+    """
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # Click the button that reveals the search form
-    revealed = await _try_click(page, [
+    # ── Schritt 1: 'Recherche' im linken Menue oeffnen ──
+    opened = await _try_click(page, [
+        'a:has-text("Recherche")',
+        'nav a:has-text("Recherche")',
+        'li:has-text("Recherche") a',
+    ])
+    if not opened:
+        try:
+            await page.get_by_role("link", name="Recherche", exact=False).first.click()
+            opened = True
+        except:
+            raise Exception("Konnte 'Recherche' im linken Menue nicht finden")
+
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    logger.info("  Duesseldorf: 'Recherche'-Seite geoeffnet")
+
+    # ── DIAGNOSE: Screenshot der Recherche-Seite ──
+    if debug:
+        await page.screenshot(path="debug_Duesseldorf_recherche.png", full_page=True)
+
+    # ── Schritt 2: evtl. vorhandenen Aufklapp-Button klicken
+    #     (NICHT abbrechen, wenn er fehlt – Formular kann schon offen sein) ──
+    await _try_click(page, [
         'a:has-text("Rechercheauswahl anzeigen")',
         'button:has-text("Rechercheauswahl anzeigen")',
-        'a:has-text("Recherche")',
         '*:has-text("Rechercheauswahl anzeigen")',
     ])
+    await page.wait_for_timeout(1000)
 
-    if not revealed:
-        try:
-            await page.get_by_text("Rechercheauswahl anzeigen").click()
-            revealed = True
-        except:
-            raise Exception("Could not find 'Rechercheauswahl anzeigen' button")
-
-    await page.wait_for_timeout(1500)
-
-    # Now proceed with the standard search flow
+    # ── Schritt 3: Standard-Suchablauf ──
     return await _do_standard_search(page, city, debug)
 
 

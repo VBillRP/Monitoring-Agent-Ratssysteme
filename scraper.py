@@ -576,12 +576,12 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
 async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     """
     Düsseldorf (SessionNet 'Sitzungsdienst Session').
-    Die Landeseite ist die ÜBERSICHT ('Aktuelle Sitzungen'); zur Suche
-    geht es über den Menuepunkt 'Recherche'. Frueherer Klick schlug fehl,
-    weil 'Recherche' offenbar KEIN klickbarer <a>-Link mit diesem Namen
-    ist (35-Sek-Timeout im Log). Daher: erst DIAGNOSE (alle 'Recherche'-
-    Elemente + href ausgeben), dann – falls ein echter Link existiert –
-    direkt dorthin navigieren.
+    ENTSCHEIDEND: Das Bürgerinfo-System steckt in einem <iframe>.
+    Deshalb fand 'document.querySelectorAll' 0 'Recherche'-Elemente,
+    obwohl der Menuepunkt im Screenshot sichtbar ist – die Suche lief
+    nur im Hauptdokument, nicht im eingebetteten Rahmen.
+    Ablauf: alle Frames auflisten (Diagnose), 'Recherche'-Link IM Frame
+    suchen und direkt dorthin navigieren, dann Standard-Suche.
     """
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
@@ -590,55 +590,53 @@ async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     if debug:
         await page.screenshot(path="debug_Duesseldorf_landing.png", full_page=True)
 
-    # ── DIAGNOSE: alle Elemente mit Text 'Recherche' auflisten ──
-    matches = await page.evaluate("""
-    () => {
-      const out = [];
-      const els = document.querySelectorAll('a, button, span, li');
-      for (const el of els) {
-        const txt = (el.textContent || '').trim();
-        if (txt.toLowerCase().includes('recherche') && txt.length < 40) {
-          out.push({tag: el.tagName, text: txt,
-                    href: el.getAttribute('href') || ''});
-        }
-      }
-      return out.slice(0, 40);
-    }
-    """)
-    logger.info(f"  Duesseldorf DIAGNOSE: {len(matches)} 'Recherche'-Element(e)")
-    for m in matches:
-        logger.info(f"    <{m['tag']}> text='{m['text']}' href='{m['href']}'")
+    # ── DIAGNOSE: alle Frames auflisten ──
+    logger.info(f"  Duesseldorf DIAGNOSE: {len(page.frames)} Frame(s)")
+    for i, f in enumerate(page.frames):
+        logger.info(f"    Frame[{i}] url='{f.url}'")
 
-    # ── Direkter Sprung: erstes <a> mit brauchbarem href ──
-    reche_href = ""
-    for m in matches:
-        h = m["href"].lower()
-        if m["tag"] == "A" and h and ("recherche" in h or "suchen" in h):
-            reche_href = m["href"]
-            break
+    # ── In JEDEM Frame nach 'Recherche'-Link suchen ──
+    reche_target = ""
+    for f in page.frames:
+        try:
+            matches = await f.evaluate("""
+            () => {
+              const out = [];
+              for (const el of document.querySelectorAll('a')) {
+                const txt = (el.textContent || '').trim();
+                if (txt.toLowerCase().includes('recherche') && txt.length < 40) {
+                  out.push({text: txt, href: el.href || ''});
+                }
+              }
+              return out.slice(0, 20);
+            }
+            """)
+        except Exception:
+            matches = []
+        for m in matches:
+            logger.info(f"    [Frame] <a> text='{m['text']}' href='{m['href']}'")
+            if not reche_target and m["href"]:
+                reche_target = m["href"]
 
-    if reche_href:
-        target = urljoin(city["url"], reche_href)
-        logger.info(f"  Duesseldorf: navigiere direkt zur Recherche -> {target}")
-        await page.goto(target, wait_until="domcontentloaded")
+    # ── Direkt zur Recherche-Seite navigieren (wird Hauptdokument) ──
+    if reche_target:
+        logger.info(f"  Duesseldorf: navigiere direkt zur Recherche -> {reche_target}")
+        await page.goto(reche_target, wait_until="domcontentloaded")
         await page.wait_for_timeout(PAGE_SETTLE_MS)
         await _dismiss_cookies(page)
     else:
-        # Fallback: doch irgendein 'Recherche'-Element anklicken
-        clicked = await _try_click(page, [
-            'a:has-text("Recherche")',
-            'nav a:has-text("Recherche")',
-            'li:has-text("Recherche") a',
-            'span:has-text("Recherche")',
-            '*:has-text("Recherche")',
-        ])
-        if not clicked:
+        # Fallback: groessten Nicht-Haupt-Frame direkt oeffnen (SessionNet-Basis)
+        frame_srcs = [f.url for f in page.frames if f.url and f.url != page.url]
+        if frame_srcs:
+            logger.info(f"  Duesseldorf: kein Recherche-Link; oeffne Frame -> {frame_srcs[0]}")
+            await page.goto(frame_srcs[0], wait_until="domcontentloaded")
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+            await _dismiss_cookies(page)
+        else:
             raise Exception(
-                "Konnte 'Recherche' weder als Link finden noch anklicken "
-                "(siehe DIAGNOSE-Liste im Log)"
+                "Duesseldorf: kein iframe/Recherche-Link gefunden "
+                "(siehe Frame-Liste im Log)"
             )
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(PAGE_SETTLE_MS)
 
     if debug:
         await page.screenshot(path="debug_Duesseldorf_recherche.png", full_page=True)
@@ -652,7 +650,6 @@ async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     await page.wait_for_timeout(1000)
 
     return await _do_standard_search(page, city, debug)
-
 
 async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
     """

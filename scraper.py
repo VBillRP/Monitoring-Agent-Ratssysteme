@@ -963,7 +963,7 @@ async def _scrape_frankfurt(page, city, debug=False):
     days_back = 3 if today.weekday() == 0 else 1
     von_dt = today - timedelta(days=days_back)
     
-    von_dt = today - timedelta(days=90)
+    # von_dt = today - timedelta(days=90)
   
 
     von_de = von_dt.strftime("%d.%m.%Y")

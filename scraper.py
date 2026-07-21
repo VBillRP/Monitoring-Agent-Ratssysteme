@@ -330,7 +330,7 @@ async def _extract_results(page: Page, base_url: str, strict: bool = False) -> l
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE 1: STANDARD
 #  Cities: Bielefeld, Dortmund, Münster, Nuremberg, Leipzig,
-#          Mainz, Mannheim, Mönchengladbach, Ludwigshafen,
+#          Mainz, Mannheim, Mönchengladbach, 
 #          Heidelberg, Cologne
 # ═══════════════════════════════════════════════════════════
 
@@ -1351,5 +1351,6 @@ _SCRAPER_MAP = {
     "hannover": _scrape_hannover,
     "stuttgart": _scrape_stuttgart,
     "frankfurt": _scrape_frankfurt,
+    "ludwigshafen": _scrape_ludwigshafen,
     "leipzig": _scrape_leipzig,
 }

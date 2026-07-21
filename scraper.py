@@ -962,11 +962,9 @@ async def _scrape_frankfurt(page, city, debug=False):
     today = datetime.now()
     days_back = 3 if today.weekday() == 0 else 1
     von_dt = today - timedelta(days=days_back)
-
-    # ─────────────────────────────────────────────────────────
-    # TEST-ZEILE (DEAKTIVIERT). Nur zum Beweis wieder einkommentieren:
-    # von_dt = today - timedelta(days=90)
-    # ─────────────────────────────────────────────────────────
+    
+    von_dt = today - timedelta(days=90)
+  
 
     von_de = von_dt.strftime("%d.%m.%Y")
     bis_de = today.strftime("%d.%m.%Y")

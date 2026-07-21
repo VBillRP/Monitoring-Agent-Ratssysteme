@@ -675,12 +675,6 @@ async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
             pass
         return "(nicht gesetzt)"
 
-# ── 90-TAGE-GEGENTEST — nach dem Test wieder ENTFERNEN ──
-    from datetime import datetime, timedelta
-    von_iso = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    logger.info(f"  [GEGENTEST] von_iso kuenstlich auf {von_iso} gesetzt (90 Tage)")
-    # ── Ende Gegentest ──
-
     von_val = await _set_date(
         ['input[name="__axxdat_full"]', 'input[name="smcfreigabevon"]'],
         von_iso, 0)

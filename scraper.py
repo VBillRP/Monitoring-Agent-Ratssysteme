@@ -576,80 +576,136 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
 async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     """
     Düsseldorf (SessionNet 'Sitzungsdienst Session').
-    ENTSCHEIDEND: Das Bürgerinfo-System steckt in einem <iframe>.
-    Deshalb fand 'document.querySelectorAll' 0 'Recherche'-Elemente,
-    obwohl der Menuepunkt im Screenshot sichtbar ist – die Suche lief
-    nur im Hauptdokument, nicht im eingebetteten Rahmen.
-    Ablauf: alle Frames auflisten (Diagnose), 'Recherche'-Link IM Frame
-    suchen und direkt dorthin navigieren, dann Standard-Suche.
+    Das Bürgerinfo liegt in einem <iframe>; wir springen direkt auf die
+    darin verlinkte Recherche-Seite (suchen01.asp) und suchen dort.
+    DATUM: Der Standard-Ablauf hat Düsseldorfs Datumsfelder NICHT gesetzt
+    (Screenshot: von=21.07., bis=20.07. – Zukunft + verdreht => 0 Treffer).
+    Deshalb setzen wir von/bis hier explizit (ISO, native date inputs) und
+    LESEN die Werte zurueck (KONTROLLE), damit 'Empty' nur bei nachweislich
+    korrektem Zeitraum (von <= heute) gilt.
+    von = gestern (Mo: Freitag), bis = heute.
     """
+    from datetime import datetime, timedelta
+
+    today = datetime.now()
+    days_back = 3 if today.weekday() == 0 else 1
+    von_iso = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    bis_iso = today.strftime("%Y-%m-%d")
+
+    # ── Step 1: Landeseite -> iframe -> echte Recherche-Adresse ──
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    if debug:
-        await page.screenshot(path="debug_Duesseldorf_landing.png", full_page=True)
-
-    # ── DIAGNOSE: alle Frames auflisten ──
-    logger.info(f"  Duesseldorf DIAGNOSE: {len(page.frames)} Frame(s)")
-    for i, f in enumerate(page.frames):
-        logger.info(f"    Frame[{i}] url='{f.url}'")
-
-    # ── In JEDEM Frame nach 'Recherche'-Link suchen ──
     reche_target = ""
     for f in page.frames:
         try:
-            matches = await f.evaluate("""
+            hrefs = await f.evaluate("""
             () => {
               const out = [];
               for (const el of document.querySelectorAll('a')) {
-                const txt = (el.textContent || '').trim();
-                if (txt.toLowerCase().includes('recherche') && txt.length < 40) {
-                  out.push({text: txt, href: el.href || ''});
-                }
+                const txt = (el.textContent || '').trim().toLowerCase();
+                if (txt === 'recherche' && el.href) out.push(el.href);
               }
-              return out.slice(0, 20);
+              return out;
             }
             """)
         except Exception:
-            matches = []
-        for m in matches:
-            logger.info(f"    [Frame] <a> text='{m['text']}' href='{m['href']}'")
-            if not reche_target and m["href"]:
-                reche_target = m["href"]
+            hrefs = []
+        for h in hrefs:
+            if not reche_target:
+                reche_target = h
 
-    # ── Direkt zur Recherche-Seite navigieren (wird Hauptdokument) ──
-    if reche_target:
-        logger.info(f"  Duesseldorf: navigiere direkt zur Recherche -> {reche_target}")
-        await page.goto(reche_target, wait_until="domcontentloaded")
-        await page.wait_for_timeout(PAGE_SETTLE_MS)
-        await _dismiss_cookies(page)
-    else:
-        # Fallback: groessten Nicht-Haupt-Frame direkt oeffnen (SessionNet-Basis)
+    if not reche_target:
         frame_srcs = [f.url for f in page.frames if f.url and f.url != page.url]
-        if frame_srcs:
-            logger.info(f"  Duesseldorf: kein Recherche-Link; oeffne Frame -> {frame_srcs[0]}")
-            await page.goto(frame_srcs[0], wait_until="domcontentloaded")
-            await page.wait_for_timeout(PAGE_SETTLE_MS)
-            await _dismiss_cookies(page)
-        else:
-            raise Exception(
-                "Duesseldorf: kein iframe/Recherche-Link gefunden "
-                "(siehe Frame-Liste im Log)"
-            )
+        if not frame_srcs:
+            raise Exception("Düsseldorf: kein iframe/Recherche-Link gefunden")
+        reche_target = frame_srcs[0].replace("info.asp", "suchen01.asp")
+
+    logger.info(f"  Düsseldorf: Recherche-Seite -> {reche_target}")
+    await page.goto(reche_target, wait_until="domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
+
+    # ── Step 2: Keywords ──
+    keywords_str = " ".join(KEYWORDS)
+    filled = await _try_fill(page, [
+        'input[name="__swords"]',
+        'textarea[name="__swords"]',
+        'input[name*="uchwoerter" i]',
+        'textarea[name*="uchwoerter" i]',
+    ], keywords_str)
+    if not filled:
+        try:
+            await page.get_by_label("Suchwort", exact=False).first.fill(keywords_str)
+            filled = True
+        except:
+            raise Exception("Düsseldorf: Suchwort-Feld nicht gefunden")
+
+    # ── Step 3: ODER ──
+    await _try_click(page, [
+        'input[name="__sao"][value="2"]',
+        'input[type="radio"][value="2"]',
+    ])
+    try:
+        await page.get_by_label("ODER", exact=True).check()
+    except:
+        pass
+
+    # ── Step 4: Datum robust setzen (Name zuerst, sonst positionsbasiert) ──
+    async def _set_date(named_selectors, iso, date_index):
+        for sel in named_selectors:
+            try:
+                elem = page.locator(sel).first
+                if await elem.is_visible(timeout=1000):
+                    await elem.fill(iso)
+                    await elem.press("Escape")
+                    val = await elem.input_value()
+                    if val:
+                        return val
+            except:
+                continue
+        try:
+            elem = page.locator('input[type="date"]').nth(date_index)
+            if await elem.is_visible(timeout=1000):
+                await elem.fill(iso)
+                await elem.press("Escape")
+                return await elem.input_value()
+        except:
+            pass
+        return "(nicht gesetzt)"
+
+    von_val = await _set_date(
+        ['input[name="__axxdat_full"]', 'input[name="smcfreigabevon"]'],
+        von_iso, 0)
+    bis_val = await _set_date(
+        ['input[name="__exxdat_full"]', 'input[name="smcfreigabebis"]'],
+        bis_iso, 1)
+
+    logger.info(f"  >> Düsseldorf KONTROLLE: von='{von_val}' (soll {von_iso}), "
+                f"bis='{bis_val}' (soll {bis_iso})")
 
     if debug:
-        await page.screenshot(path="debug_Duesseldorf_recherche.png", full_page=True)
+        await page.screenshot(path="debug_Düsseldorf_pre_search.png", full_page=True)
 
-    # ── evtl. Aufklapp-Button, dann Standard-Suche ──
-    await _try_click(page, [
-        'a:has-text("Rechercheauswahl anzeigen")',
-        'button:has-text("Rechercheauswahl anzeigen")',
-        '*:has-text("Rechercheauswahl anzeigen")',
+    # ── Step 5: Suchen ──
+    clicked = await _try_click(page, [
+        'input[name="go"]',
+        'input[type="submit"][value*="uch" i]',
+        'button:has-text("Suchen")',
+        'input[type="submit"]',
+        'button[type="submit"]',
     ])
-    await page.wait_for_timeout(1000)
+    if not clicked:
+        raise Exception("Düsseldorf: Such-Button nicht gefunden")
 
-    return await _do_standard_search(page, city, debug)
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+    if debug:
+        await page.screenshot(path="debug_Düsseldorf_results.png", full_page=True)
+
+    return await _extract_results(page, reche_target)
 
 async def _do_standard_search(page: Page, city: dict, debug: bool) -> list:
     """

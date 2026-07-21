@@ -1300,6 +1300,44 @@ async def _scrape_leipzig(page: Page, city: dict, debug: bool) -> list:
     logger.info(f"  Leipzig: {len(results)} result(s) total")
     return results
  
+# ═══════════════════════════════════════════════════════════
+#  SCRAPER TYPE: LUDWIGSHAFEN
+#  Sitzt hinter einer Myra-WAF. Stufe 1: Browser als echten
+#  Nutzer tarnen (Stealth + Header + JS-Challenge-Zeit).
+#  Danach EHRLICH pruefen: durchgekommen oder immer noch Sperre?
+# ═══════════════════════════════════════════════════════════
+
+async def _scrape_ludwigshafen(page: Page, city: dict, debug: bool) -> list:
+    """Ludwigshafen: Myra-WAF. Erst tarnen, dann pruefen, dann Standard-Suche."""
+    # 1) Automatisierungs-Signale verstecken (vor dem Laden)
+    await page.add_init_script(_STEALTH_JS)
+
+    # 2) Echte Browser-Header setzen
+    await page.set_extra_http_headers({
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        "Referer": "https://www.google.com/",
+        "Upgrade-Insecure-Requests": "1",
+    })
+
+    # 3) Seite laden und der WAF Zeit fuer eine JS-Pruefung geben
+    await page.goto(city["url"], wait_until="networkidle")
+    await page.wait_for_timeout(6000)
+
+    # 4) EHRLICHE Pruefung: sind wir durch oder gesperrt?
+    content = (await page.content()).lower()
+    if "you are not supposed to be here" in content:
+        if debug:
+            await page.screenshot(path="debug_Ludwigshafen_blocked.png", full_page=True)
+        raise Exception(
+            "Myra-WAF blockiert weiterhin trotz Tarnung → Ursache ist die "
+            "Rechenzentrums-IP von GitHub Actions (nicht der Fingerabdruck). "
+            "Loesung: Self-Hosted-Runner mit Wohn-IP oder Residential-Proxy."
+        )
+
+    logger.info("  Ludwigshafen: WAF passiert ✓ → Standard-Suche")
+    await _dismiss_cookies(page)
+    return await _scrape_standard(page, city, debug)
+
 
 # ─────────────────────────────────────────────────────────
 # DISPATCH MAP — connects city types to their scrapers

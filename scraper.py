@@ -947,9 +947,15 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
 
 async def _scrape_frankfurt(page, city, debug=False):
     """
-    Frankfurt PARLIS (volltext.html).
-    DIAGNOSE-VERSION: loggt zu JEDEM Kandidaten die href-Adresse,
-    damit wir Menue-Links von echten Treffern sicher unterscheiden koennen.
+    Frankfurt PARLIS (volltext.html) — FINAL.
+    Suche ist beweisbar identisch zur Handarbeit:
+      TEXT (Keywords, Leerzeichen-getrennt), TEXT_O = 'beinhaltet (oder)',
+      DATUM (von) + DATUM_2 (bis).
+    Auslesen:
+      - 'kein Treffer' => ehrlich EMPTY,
+      - es zaehlen NUR echte Dokumentlinks '/PARLISLINK/DDW?'.
+        Alles andere (Menue .html/.htm/.php, SDF-Sprungmarken,
+        EDW-Ansicht, PARLIS2S-Login, externe Links) wird verworfen.
     """
     from datetime import datetime, timedelta
 
@@ -958,8 +964,8 @@ async def _scrape_frankfurt(page, city, debug=False):
     von_dt = today - timedelta(days=days_back)
 
     # ─────────────────────────────────────────────────────────
-    # TEST-ZEILE (weites Fenster, damit garantiert Treffer da sind)
-    von_dt = today - timedelta(days=90)
+    # TEST-ZEILE (DEAKTIVIERT). Nur zum Beweis wieder einkommentieren:
+    # von_dt = today - timedelta(days=90)
     # ─────────────────────────────────────────────────────────
 
     von_de = von_dt.strftime("%d.%m.%Y")
@@ -971,6 +977,7 @@ async def _scrape_frankfurt(page, city, debug=False):
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
+    # ── 1) Keyword-Feld TEXT ──
     filled = await _try_fill(page, [
         'input[name="TEXT"]',
         'textarea[name="TEXT"]',
@@ -978,6 +985,7 @@ async def _scrape_frankfurt(page, city, debug=False):
     if not filled:
         raise Exception("Frankfurt: Keyword-Feld TEXT nicht gefunden")
 
+    # ── 2) Operator TEXT_O EXAKT auf 'beinhaltet (oder)' ──
     try:
         await page.select_option('select[name="TEXT_O"]', label="beinhaltet (oder)")
     except Exception:
@@ -986,9 +994,11 @@ async def _scrape_frankfurt(page, city, debug=False):
         except Exception:
             logger.warning("  Frankfurt: TEXT_O konnte nicht auf 'oder' gesetzt werden")
 
+    # ── 3) Datumsfelder ──
     await _try_fill(page, ['input[name="DATUM"]'], von_de)
     await _try_fill(page, ['input[name="DATUM_2"]'], bis_de)
 
+    # ── KONTROLLE vor dem Absenden ──
     try:
         to_val = await page.input_value('select[name="TEXT_O"]')
         d1 = await page.input_value('input[name="DATUM"]')
@@ -1000,6 +1010,7 @@ async def _scrape_frankfurt(page, city, debug=False):
     if debug:
         await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
 
+    # ── Absenden ──
     await _try_click(page, [
         'input[type="submit"]',
         'button[type="submit"]',
@@ -1012,6 +1023,7 @@ async def _scrape_frankfurt(page, city, debug=False):
     if debug:
         await page.screenshot(path="debug_Frankfurt_results.png", full_page=True)
 
+    # ── 4) 'kein Treffer' => ehrlich EMPTY ──
     page_text = (await page.content()).lower()
     empty_markers = [
         "kein treffer", "keine treffer",
@@ -1021,8 +1033,7 @@ async def _scrape_frankfurt(page, city, debug=False):
         logger.info("  Frankfurt: PARLIS meldet 'kein Treffer' => Empty (korrekt)")
         return []
 
-    # ── DIAGNOSE: JEDEN Link mit Adresse ins Log schreiben ──
-    logger.info("  ===== FRANKFURT DIAGNOSE: Titel => Adresse =====")
+    # ── 5) NUR echte Dokumentlinks '/PARLISLINK/DDW?' ──
     results = []
     seen = set()
     links = await page.locator("a").all()
@@ -1035,17 +1046,19 @@ async def _scrape_frankfurt(page, city, debug=False):
         if not href or not title:
             continue
 
+        # Der einzige, bewiesene Treffer-Marker:
+        if "/parlislink/ddw?" not in href.lower():
+            continue
+
         full = urljoin(city["url"], href)
         if full in seen:
             continue
         seen.add(full)
-
-        logger.info(f"    [{title[:45]:45}] => {full}")
         results.append({"title": title[:200], "url": full})
 
-    logger.info(f"  ===== FRANKFURT DIAGNOSE ENDE: {len(results)} Links =====")
+    logger.info(f"  Frankfurt: {len(results)} echte Dokumente extrahiert")
     return results
-
+ 
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE 8: BERLIN (PARDOK "portala")

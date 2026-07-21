@@ -175,7 +175,7 @@ CITIES = [
     {
         "name": "Ludwigshafen",
         "url": "https://www.ludwigshafen.de/ratsinformationssystem/bi/suchen01.php?smcrecherche=7020",
-        "type": "standard",
+        "type": "ludwigshafen",
     },
     {
         "name": "Heidelberg",

@@ -946,46 +946,118 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
-    """Frankfurt PARLIS full-text search."""
+    """
+    Frankfurt PARLIS full-text search — SELF-DIAGNOSING version.
+    Loggt jeden Schritt des 'Rechenwegs', damit wir sehen, ob die
+    Suche wirklich lief, statt still Müll (Hilfe-Link) zurückzugeben.
+    """
+    from datetime import datetime, timedelta
+
+    # ── Datumsfenster lokal berechnen (Wochenende beachten) ──
+    today = datetime.now()
+    days_back = 3 if today.weekday() == 0 else 1   # Montag reicht bis Freitag zurück
+    yesterday = today - timedelta(days=days_back)
+    von_de = yesterday.strftime("%d.%m.%Y")
+    bis_de = today.strftime("%d.%m.%Y")
+
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    keywords_str = " ".join(KEYWORDS)
+    url_before = page.url
+    logger.info(f"  Frankfurt: geöffnet {url_before}")
 
+    # ── DIAGNOSE 1: alle Formularfelder der Seite auflisten ──
+    try:
+        fields = await page.locator("input, textarea, select").all()
+        logger.info(f"  Frankfurt: {len(fields)} Formularfeld(er) gefunden:")
+        for f in fields:
+            try:
+                name = await f.get_attribute("name")
+                ftype = await f.get_attribute("type")
+                placeholder = await f.get_attribute("placeholder")
+                logger.info(f"      • name={name!r} type={ftype!r} placeholder={placeholder!r}")
+            except:
+                continue
+    except Exception as e:
+        logger.warning(f"  Frankfurt: konnte Felder nicht auflisten: {e}")
+
+    # ── Keyword-Feld befüllen ──
+    keywords_str = " ".join(KEYWORDS)
     filled = await _try_fill(page, [
         'input[name*="volltext" i]',
         'textarea[name*="volltext" i]',
         'input[name*="such" i]',
         'textarea[name*="such" i]',
-        'input[type="text"]',
+        'input[name*="wort" i]',
         'input[type="search"]',
+        'input[type="text"]',
     ], keywords_str)
-
+    logger.info(f"  Frankfurt: Keyword-Feld befüllt = {filled}")
     if not filled:
-        raise Exception("Could not find search field for Frankfurt PARLIS")
+        raise Exception("Frankfurt: Keyword-Feld nicht gefunden")
 
-    # Set dates if available
-    await _try_fill(page, [
-        'input[name*="von" i]', 'input[name*="datum" i]',
-  ], YESTERDAY_DE)
-    await _try_fill(page, [
-        'input[name*="bis" i]',
-    ], TODAY_DE)
+    # ── Datumsfelder befüllen (protokollieren) ──
+    von_ok = await _try_fill(page, [
+        'input[name*="von" i]', 'input[name*="datum" i]', 'input[name*="start" i]',
+    ], von_de)
+    bis_ok = await _try_fill(page, [
+        'input[name*="bis" i]', 'input[name*="end" i]',
+    ], bis_de)
+    logger.info(f"  Frankfurt: Datum von={von_ok} ({von_de}), bis={bis_ok} ({bis_de})")
 
     if debug:
         await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
 
-    await _try_click(page, [
+    # ── Suche absenden ──
+    clicked = await _try_click(page, [
         'input[type="submit"]',
         'button[type="submit"]',
         'input[value*="uch" i]',
         'button:has-text("Such")',
     ])
+    logger.info(f"  Frankfurt: Such-Button geklickt = {clicked}")
 
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
-    return await _extract_results(page, city["url"])
+
+    # ── DIAGNOSE 2: lief die Suche wirklich? ──
+    url_after = page.url
+    if url_after == url_before:
+        logger.warning(f"  Frankfurt: ⚠ URL hat sich NICHT geändert — Suche lief evtl. nicht! ({url_after})")
+    else:
+        logger.info(f"  Frankfurt: URL nach Suche = {url_after}")
+
+    if debug:
+        await page.screenshot(path="debug_Frankfurt_results.png", full_page=True)
+
+    # ── DIAGNOSE 3: alle Kandidaten-Links ausgeben (Müll vs. echt) ──
+    try:
+        anchors = await page.locator("a[href]").all()
+        logger.info(f"  Frankfurt: {len(anchors)} Link(s) auf Ergebnisseite; Kandidaten:")
+        shown = 0
+        for a in anchors:
+            try:
+                text = (await a.inner_text() or "").strip()
+                href = await a.get_attribute("href")
+                if not text or not href or len(text) < 5:
+                    continue
+                if href == "#" or href.startswith("javascript:"):
+                    continue
+                logger.info(f"      • {text[:70]!r} -> {href}")
+                shown += 1
+                if shown >= 40:
+                    logger.info("      • … (weitere Links unterdrückt)")
+                    break
+            except:
+                continue
+    except Exception as e:
+        logger.warning(f"  Frankfurt: konnte Links nicht ausgeben: {e}")
+
+    results = await _extract_results(page, city["url"])
+    logger.info(f"  Frankfurt: extrahiert {len(results)} Ergebnis(se)")
+    return results
+
 
 # ═══════════════════════════════════════════════════════════
 #  SCRAPER TYPE 8: BERLIN (PARDOK "portala")

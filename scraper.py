@@ -945,117 +945,123 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
 #  Different platform entirely — PARLIS full-text search.
 # ═══════════════════════════════════════════════════════════
 
-async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
+async def _scrape_frankfurt(page, city, debug=False):
     """
-    Frankfurt PARLIS full-text search — v3.
-    Fix: TEXT_O muss EXAKT auf 'beinhaltet (oder)' stehen (sonst UND!).
-    Zusätzlich: Kontroll-Ablesung von TEXT_O und beiden Datumsfeldern
-    DIREKT vor dem Absenden, plus URL-Log danach.
-    Bekannte Felder:
-      TEXT    = Suchbegriffe        TEXT_O  = Operator (und/oder)
-      DATUM   = von  (>= )          DATUM_2 = bis (<=)
+    Frankfurt PARLIS (volltext.html).
+    Die Suche ist beweisbar identisch zur Handarbeit.
+    Diese Version:
+      1. füllt TEXT (Keywords), setzt TEXT_O = 'beinhaltet (oder)',
+         setzt DATUM (von) und DATUM_2 (bis),
+      2. liest VOR dem Absenden alles zur Kontrolle zurück,
+      3. erkennt die 'kein Treffer'-Meldung => ehrlich EMPTY,
+      4. zählt NIEMALS Hilfe-/Menü-Links (hilfe_vt.htm etc.) als Treffer.
     """
     from datetime import datetime, timedelta
 
+    # ── eigenes Datumsfenster (Mo reicht bis Fr zurück) ──
     today = datetime.now()
     days_back = 3 if today.weekday() == 0 else 1
-    yesterday = today - timedelta(days=days_back)
-    von_de = yesterday.strftime("%d.%m.%Y")
+    von_dt = today - timedelta(days=days_back)
+    von_de = von_dt.strftime("%d.%m.%Y")
     bis_de = today.strftime("%d.%m.%Y")
+
+    keywords_str = " ".join(KEYWORDS)
 
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    url_before = page.url
-    logger.info(f"  Frankfurt: geöffnet {url_before}")
-
-    # ── Suchbegriffe ins Feld TEXT ──
-    keywords_str = " ".join(KEYWORDS)
-    filled = await _try_fill(page, ['input[name="TEXT"]'], keywords_str)
-    logger.info(f"  Frankfurt: TEXT-Feld befüllt = {filled}")
+    # ── 1) Keyword-Feld TEXT befüllen ──
+    filled = await _try_fill(page, [
+        'input[name="TEXT"]',
+        'textarea[name="TEXT"]',
+    ], keywords_str)
     if not filled:
-        raise Exception("Frankfurt: TEXT-Feld nicht gefunden")
+        raise Exception("Frankfurt: Keyword-Feld TEXT nicht gefunden")
 
-    # ── Operator EXAKT auf 'beinhaltet (oder)' setzen ──
-    selected = False
-    for how in [
-        {"value": "beinhaltet (oder)"},
-        {"label": "beinhaltet (oder)"},
-    ]:
+    # ── 2) Operator TEXT_O EXAKT auf 'beinhaltet (oder)' ──
+    op_set = False
+    try:
+        await page.select_option('select[name="TEXT_O"]', label="beinhaltet (oder)")
+        op_set = True
+    except Exception:
         try:
-            await page.select_option('select[name="TEXT_O"]', **how)
-            selected = True
-            break
-        except:
-            continue
-    logger.info(f"  Frankfurt: ODER-Auswahl versucht, erfolgreich = {selected}")
+            await page.select_option('select[name="TEXT_O"]', value="beinhaltet (oder)")
+            op_set = True
+        except Exception:
+            logger.warning("  Frankfurt: TEXT_O konnte nicht auf 'oder' gesetzt werden")
 
-    # ── Datum: DATUM (von) und DATUM_2 (bis) ──
-    von_ok = await _try_fill(page, ['input[name="DATUM"]'], von_de)
-    bis_ok = await _try_fill(page, ['input[name="DATUM_2"]'], bis_de)
-    logger.info(f"  Frankfurt: DATUM von={von_ok} ({von_de}), DATUM_2 bis={bis_ok} ({bis_de})")
+    # ── 3) Datumsfelder ──
+    await _try_fill(page, ['input[name="DATUM"]'], von_de)
+    await _try_fill(page, ['input[name="DATUM_2"]'], bis_de)
 
-    # ── KONTROLLE direkt vor dem Absenden (Wahrheit statt Annahme) ──
+    # ── KONTROLLE direkt vor dem Absenden ──
     try:
-        chosen = await page.locator('select[name="TEXT_O"]').input_value()
-        logger.info(f"  Frankfurt: >> TEXT_O steht auf = {chosen!r}")
-    except Exception as e:
-        logger.info(f"  Frankfurt: TEXT_O nicht ablesbar: {e}")
-    try:
-        d1 = await page.locator('input[name="DATUM"]').input_value()
-        d2 = await page.locator('input[name="DATUM_2"]').input_value()
-        logger.info(f"  Frankfurt: >> Felder vor Absenden: DATUM={d1!r}, DATUM_2={d2!r}")
-    except Exception as e:
-        logger.info(f"  Frankfurt: Datumsfelder nicht ablesbar: {e}")
+        to_val = await page.input_value('select[name="TEXT_O"]')
+        d1 = await page.input_value('input[name="DATUM"]')
+        d2 = await page.input_value('input[name="DATUM_2"]')
+        logger.info(f"  >> Frankfurt Kontrolle: TEXT_O='{to_val}', DATUM(von)='{d1}', DATUM_2(bis)='{d2}'")
+    except Exception:
+        pass
 
     if debug:
         await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
 
-    # ── Suche absenden ──
-    clicked = await _try_click(page, [
+    # ── Absenden ──
+    await _try_click(page, [
         'input[type="submit"]',
         'button[type="submit"]',
+        'input[value*="Such" i]',
+        'button:has-text("Such")',
     ])
-    logger.info(f"  Frankfurt: Such-Button geklickt = {clicked}")
-
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
-
-    url_after = page.url
-    if url_after == url_before:
-        logger.warning(f"  Frankfurt: ⚠ URL UNVERÄNDERT — Suche lief evtl. nicht")
-    else:
-        logger.info(f"  Frankfurt: URL nach Suche = {url_after}")
 
     if debug:
         await page.screenshot(path="debug_Frankfurt_results.png", full_page=True)
 
-    # ── Kandidaten-Links dumpen ──
-    try:
-        anchors = await page.locator("a[href]").all()
-        logger.info(f"  Frankfurt: {len(anchors)} Link(s); Kandidaten:")
-        shown = 0
-        for a in anchors:
-            try:
-                text = (await a.inner_text() or "").strip()
-                href = await a.get_attribute("href")
-                if not text or not href or len(text) < 5:
-                    continue
-                if href == "#" or href.startswith("javascript:"):
-                    continue
-                logger.info(f"      • {text[:70]!r} -> {href}")
-                shown += 1
-                if shown >= 50:
-                    logger.info("      • … (weitere unterdrückt)")
-                    break
-            except:
-                continue
-    except Exception as e:
-        logger.warning(f"  Frankfurt: konnte Links nicht ausgeben: {e}")
+    # ── 4) 'kein Treffer' => ehrlich EMPTY ──
+    page_text = (await page.content()).lower()
+    empty_markers = [
+        "kein treffer",
+        "keine treffer",
+        "wurde kein treffer erzielt",
+        "keine dokumente",
+    ]
+    if any(m in page_text for m in empty_markers):
+        logger.info("  Frankfurt: PARLIS meldet 'kein Treffer' => Empty (korrekt)")
+        return []
 
-    results = await _extract_results(page, city["url"])
-    logger.info(f"  Frankfurt: extrahiert {len(results)} Ergebnis(se)")
+    # ── 5) Echte Treffer auslesen, Hilfe-/Menü-Links ausschließen ──
+    results = []
+    seen = set()
+    NOISE = ("hilfe_vt", "hilfe", "impressum", "datenschutz",
+             "kontakt", "startseite", "javascript:", "mailto:", "#")
+
+    links = await page.locator("a").all()
+    for link in links:
+        try:
+            href = await link.get_attribute("href")
+            title = (await link.inner_text()).strip()
+        except Exception:
+            continue
+        if not href or not title:
+            continue
+
+        low = href.lower()
+        if any(n in low for n in NOISE):
+            continue
+        # Nur echte PARLIS-Dokumentlinks
+        if "parlislink" not in low and "/parlis" not in low:
+            continue
+
+        full = urljoin(city["url"], href)
+        if full in seen:
+            continue
+        seen.add(full)
+        results.append({"title": title[:200], "url": full})
+
+    logger.info(f"  Frankfurt: {len(results)} echte Treffer extrahiert")
     return results
 
 

@@ -30,6 +30,14 @@ DELAY_BETWEEN_KEYWORDS = 1.5   # Seconds between individual keyword searches
 PAGE_SETTLE_MS = 2000          # Milliseconds to let a page finish loading
 PAGE_TIMEOUT_MS = 30000        # Max milliseconds before giving up on a page
 
+# Stealth-Skript: versteckt die verraeterischsten Automatisierungs-Signale.
+# Wird VOR dem Laden jeder Seite ausgefuehrt, wenn ein Handler es anfordert.
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['de-DE', 'de', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = { runtime: {} };
+"""
 
 # ═══════════════════════════════════════════════════════════
 #                    MAIN ENTRY POINT

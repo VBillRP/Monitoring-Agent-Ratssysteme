@@ -948,25 +948,17 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
 async def _scrape_frankfurt(page, city, debug=False):
     """
     Frankfurt PARLIS (volltext.html).
-    Die Suche ist beweisbar identisch zur Handarbeit.
-    Diese Version:
-      1. füllt TEXT (Keywords), setzt TEXT_O = 'beinhaltet (oder)',
-         setzt DATUM (von) und DATUM_2 (bis),
-      2. liest VOR dem Absenden alles zur Kontrolle zurück,
-      3. erkennt die 'kein Treffer'-Meldung => ehrlich EMPTY,
-      4. zählt NIEMALS Hilfe-/Menü-Links (hilfe_vt.htm etc.) als Treffer.
+    DIAGNOSE-VERSION: loggt zu JEDEM Kandidaten die href-Adresse,
+    damit wir Menue-Links von echten Treffern sicher unterscheiden koennen.
     """
     from datetime import datetime, timedelta
 
-    # ── eigenes Datumsfenster (Mo reicht bis Fr zurück) ──
     today = datetime.now()
     days_back = 3 if today.weekday() == 0 else 1
     von_dt = today - timedelta(days=days_back)
 
     # ─────────────────────────────────────────────────────────
-    # TEST-ZEILE (NUR ZUM BEWEIS, DANACH WIEDER MIT # DEAKTIVIEREN!)
-    # Erzwingt ein weites Fenster, damit garantiert Treffer kommen,
-    # damit wir sehen, ob der Extractor echte Treffer sauber ausliest.
+    # TEST-ZEILE (weites Fenster, damit garantiert Treffer da sind)
     von_dt = today - timedelta(days=90)
     # ─────────────────────────────────────────────────────────
 
@@ -979,7 +971,6 @@ async def _scrape_frankfurt(page, city, debug=False):
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # ── 1) Keyword-Feld TEXT befüllen ──
     filled = await _try_fill(page, [
         'input[name="TEXT"]',
         'textarea[name="TEXT"]',
@@ -987,7 +978,6 @@ async def _scrape_frankfurt(page, city, debug=False):
     if not filled:
         raise Exception("Frankfurt: Keyword-Feld TEXT nicht gefunden")
 
-    # ── 2) Operator TEXT_O EXAKT auf 'beinhaltet (oder)' ──
     try:
         await page.select_option('select[name="TEXT_O"]', label="beinhaltet (oder)")
     except Exception:
@@ -996,11 +986,9 @@ async def _scrape_frankfurt(page, city, debug=False):
         except Exception:
             logger.warning("  Frankfurt: TEXT_O konnte nicht auf 'oder' gesetzt werden")
 
-    # ── 3) Datumsfelder ──
     await _try_fill(page, ['input[name="DATUM"]'], von_de)
     await _try_fill(page, ['input[name="DATUM_2"]'], bis_de)
 
-    # ── KONTROLLE direkt vor dem Absenden ──
     try:
         to_val = await page.input_value('select[name="TEXT_O"]')
         d1 = await page.input_value('input[name="DATUM"]')
@@ -1012,7 +1000,6 @@ async def _scrape_frankfurt(page, city, debug=False):
     if debug:
         await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
 
-    # ── Absenden ──
     await _try_click(page, [
         'input[type="submit"]',
         'button[type="submit"]',
@@ -1025,24 +1012,19 @@ async def _scrape_frankfurt(page, city, debug=False):
     if debug:
         await page.screenshot(path="debug_Frankfurt_results.png", full_page=True)
 
-    # ── 4) 'kein Treffer' => ehrlich EMPTY ──
     page_text = (await page.content()).lower()
     empty_markers = [
-        "kein treffer",
-        "keine treffer",
-        "wurde kein treffer erzielt",
-        "keine dokumente",
+        "kein treffer", "keine treffer",
+        "wurde kein treffer erzielt", "keine dokumente",
     ]
     if any(m in page_text for m in empty_markers):
         logger.info("  Frankfurt: PARLIS meldet 'kein Treffer' => Empty (korrekt)")
         return []
 
-    # ── 5) Echte Treffer auslesen, Hilfe-/Menü-Links ausschließen ──
+    # ── DIAGNOSE: JEDEN Link mit Adresse ins Log schreiben ──
+    logger.info("  ===== FRANKFURT DIAGNOSE: Titel => Adresse =====")
     results = []
     seen = set()
-    NOISE = ("hilfe_vt", "hilfe", "impressum", "datenschutz",
-             "kontakt", "startseite", "javascript:", "mailto:", "#")
-
     links = await page.locator("a").all()
     for link in links:
         try:
@@ -1053,19 +1035,15 @@ async def _scrape_frankfurt(page, city, debug=False):
         if not href or not title:
             continue
 
-        low = href.lower()
-        if any(n in low for n in NOISE):
-            continue
-        if "parlislink" not in low and "/parlis" not in low:
-            continue
-
         full = urljoin(city["url"], href)
         if full in seen:
             continue
         seen.add(full)
+
+        logger.info(f"    [{title[:45]:45}] => {full}")
         results.append({"title": title[:200], "url": full})
 
-    logger.info(f"  Frankfurt: {len(results)} echte Treffer extrahiert")
+    logger.info(f"  ===== FRANKFURT DIAGNOSE ENDE: {len(results)} Links =====")
     return results
 
 

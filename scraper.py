@@ -575,40 +575,75 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
 
 async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     """
-    Düsseldorf (SessionNet).
-    WICHTIG: Die konfigurierte URL landet auf der ÜBERSICHTS-Seite
-    ('Aktuelle Sitzungen'), NICHT auf dem Suchformular. Deshalb schlug
-    die Suche nach 'Rechercheauswahl anzeigen' fehl – der Button ist
-    auf dieser Seite gar nicht vorhanden.
-    Ablauf: erst 'Recherche' im linken Menue oeffnen, dann suchen.
+    Düsseldorf (SessionNet 'Sitzungsdienst Session').
+    Die Landeseite ist die ÜBERSICHT ('Aktuelle Sitzungen'); zur Suche
+    geht es über den Menuepunkt 'Recherche'. Frueherer Klick schlug fehl,
+    weil 'Recherche' offenbar KEIN klickbarer <a>-Link mit diesem Namen
+    ist (35-Sek-Timeout im Log). Daher: erst DIAGNOSE (alle 'Recherche'-
+    Elemente + href ausgeben), dann – falls ein echter Link existiert –
+    direkt dorthin navigieren.
     """
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # ── Schritt 1: 'Recherche' im linken Menue oeffnen ──
-    opened = await _try_click(page, [
-        'a:has-text("Recherche")',
-        'nav a:has-text("Recherche")',
-        'li:has-text("Recherche") a',
-    ])
-    if not opened:
-        try:
-            await page.get_by_role("link", name="Recherche", exact=False).first.click()
-            opened = True
-        except:
-            raise Exception("Konnte 'Recherche' im linken Menue nicht finden")
+    if debug:
+        await page.screenshot(path="debug_Duesseldorf_landing.png", full_page=True)
 
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(PAGE_SETTLE_MS)
-    logger.info("  Duesseldorf: 'Recherche'-Seite geoeffnet")
+    # ── DIAGNOSE: alle Elemente mit Text 'Recherche' auflisten ──
+    matches = await page.evaluate("""
+    () => {
+      const out = [];
+      const els = document.querySelectorAll('a, button, span, li');
+      for (const el of els) {
+        const txt = (el.textContent || '').trim();
+        if (txt.toLowerCase().includes('recherche') && txt.length < 40) {
+          out.push({tag: el.tagName, text: txt,
+                    href: el.getAttribute('href') || ''});
+        }
+      }
+      return out.slice(0, 40);
+    }
+    """)
+    logger.info(f"  Duesseldorf DIAGNOSE: {len(matches)} 'Recherche'-Element(e)")
+    for m in matches:
+        logger.info(f"    <{m['tag']}> text='{m['text']}' href='{m['href']}'")
 
-    # ── DIAGNOSE: Screenshot der Recherche-Seite ──
+    # ── Direkter Sprung: erstes <a> mit brauchbarem href ──
+    reche_href = ""
+    for m in matches:
+        h = m["href"].lower()
+        if m["tag"] == "A" and h and ("recherche" in h or "suchen" in h):
+            reche_href = m["href"]
+            break
+
+    if reche_href:
+        target = urljoin(city["url"], reche_href)
+        logger.info(f"  Duesseldorf: navigiere direkt zur Recherche -> {target}")
+        await page.goto(target, wait_until="domcontentloaded")
+        await page.wait_for_timeout(PAGE_SETTLE_MS)
+        await _dismiss_cookies(page)
+    else:
+        # Fallback: doch irgendein 'Recherche'-Element anklicken
+        clicked = await _try_click(page, [
+            'a:has-text("Recherche")',
+            'nav a:has-text("Recherche")',
+            'li:has-text("Recherche") a',
+            'span:has-text("Recherche")',
+            '*:has-text("Recherche")',
+        ])
+        if not clicked:
+            raise Exception(
+                "Konnte 'Recherche' weder als Link finden noch anklicken "
+                "(siehe DIAGNOSE-Liste im Log)"
+            )
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(PAGE_SETTLE_MS)
+
     if debug:
         await page.screenshot(path="debug_Duesseldorf_recherche.png", full_page=True)
 
-    # ── Schritt 2: evtl. vorhandenen Aufklapp-Button klicken
-    #     (NICHT abbrechen, wenn er fehlt – Formular kann schon offen sein) ──
+    # ── evtl. Aufklapp-Button, dann Standard-Suche ──
     await _try_click(page, [
         'a:has-text("Rechercheauswahl anzeigen")',
         'button:has-text("Rechercheauswahl anzeigen")',
@@ -616,7 +651,6 @@ async def _scrape_click_first(page: Page, city: dict, debug: bool) -> list:
     ])
     await page.wait_for_timeout(1000)
 
-    # ── Schritt 3: Standard-Suchablauf ──
     return await _do_standard_search(page, city, debug)
 
 

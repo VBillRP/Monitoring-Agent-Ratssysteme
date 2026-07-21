@@ -947,10 +947,13 @@ async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
 
 async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
     """
-    Frankfurt PARLIS full-text search — v2 (echte Feldnamen).
-    Bekannt aus der Diagnose:
-      TEXT    = Suchbegriffe   |  TEXT_O  = Operator (UND/ODER)
-      DATUM   = Datum von      |  DATUM_2 = Datum bis
+    Frankfurt PARLIS full-text search — v3.
+    Fix: TEXT_O muss EXAKT auf 'beinhaltet (oder)' stehen (sonst UND!).
+    Zusätzlich: Kontroll-Ablesung von TEXT_O und beiden Datumsfeldern
+    DIREKT vor dem Absenden, plus URL-Log danach.
+    Bekannte Felder:
+      TEXT    = Suchbegriffe        TEXT_O  = Operator (und/oder)
+      DATUM   = von  (>= )          DATUM_2 = bis (<=)
     """
     from datetime import datetime, timedelta
 
@@ -967,44 +970,44 @@ async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
     url_before = page.url
     logger.info(f"  Frankfurt: geöffnet {url_before}")
 
-    # ── Suchbegriffe ins ECHTE Feld TEXT ──
+    # ── Suchbegriffe ins Feld TEXT ──
     keywords_str = " ".join(KEYWORDS)
     filled = await _try_fill(page, ['input[name="TEXT"]'], keywords_str)
-    logger.info(f"  Frankfurt: TEXT-Feld (Suchbegriffe) befüllt = {filled}")
+    logger.info(f"  Frankfurt: TEXT-Feld befüllt = {filled}")
     if not filled:
         raise Exception("Frankfurt: TEXT-Feld nicht gefunden")
 
-    # ── Operator TEXT_O: Optionen protokollieren + auf ODER stellen ──
-    try:
-        opts = await page.locator('select[name="TEXT_O"] option').all()
-        listed = []
-        for o in opts:
-            val = await o.get_attribute("value")
-            txt = (await o.inner_text() or "").strip()
-            listed.append(f"{val!r}={txt!r}")
-        logger.info(f"  Frankfurt: TEXT_O Optionen: {listed}")
-        for candidate in ["ODER", "oder", "OR", "or", "2"]:
-            try:
-                await page.select_option('select[name="TEXT_O"]', candidate)
-                logger.info(f"  Frankfurt: TEXT_O gesetzt auf {candidate!r}")
-                break
-            except:
-                continue
-    except Exception as e:
-        logger.info(f"  Frankfurt: TEXT_O nicht als <select> lesbar: {e}")
+    # ── Operator EXAKT auf 'beinhaltet (oder)' setzen ──
+    selected = False
+    for how in [
+        {"value": "beinhaltet (oder)"},
+        {"label": "beinhaltet (oder)"},
+    ]:
+        try:
+            await page.select_option('select[name="TEXT_O"]', **how)
+            selected = True
+            break
+        except:
+            continue
+    logger.info(f"  Frankfurt: ODER-Auswahl versucht, erfolgreich = {selected}")
 
     # ── Datum: DATUM (von) und DATUM_2 (bis) ──
     von_ok = await _try_fill(page, ['input[name="DATUM"]'], von_de)
     bis_ok = await _try_fill(page, ['input[name="DATUM_2"]'], bis_de)
     logger.info(f"  Frankfurt: DATUM von={von_ok} ({von_de}), DATUM_2 bis={bis_ok} ({bis_de})")
 
-    # Versteckte Operatoren zur Info auslesen
-    for hid in ["DATUM_O", "DATUM_2_O", "TEXT_O"]:
-        try:
-            v = await page.locator(f'[name="{hid}"]').first.get_attribute("value")
-            logger.info(f"  Frankfurt: {hid} = {v!r}")
-        except:
-            pass
+    # ── KONTROLLE direkt vor dem Absenden (Wahrheit statt Annahme) ──
+    try:
+        chosen = await page.locator('select[name="TEXT_O"]').input_value()
+        logger.info(f"  Frankfurt: >> TEXT_O steht auf = {chosen!r}")
+    except Exception as e:
+        logger.info(f"  Frankfurt: TEXT_O nicht ablesbar: {e}")
+    try:
+        d1 = await page.locator('input[name="DATUM"]').input_value()
+        d2 = await page.locator('input[name="DATUM_2"]').input_value()
+        logger.info(f"  Frankfurt: >> Felder vor Absenden: DATUM={d1!r}, DATUM_2={d2!r}")
+    except Exception as e:
+        logger.info(f"  Frankfurt: Datumsfelder nicht ablesbar: {e}")
 
     if debug:
         await page.screenshot(path="debug_Frankfurt_pre_search.png", full_page=True)
@@ -1019,20 +1022,19 @@ async def _scrape_frankfurt(page: Page, city: dict, debug: bool) -> list:
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
 
-    # ── Beweis: lief die Suche wirklich? ──
     url_after = page.url
     if url_after == url_before:
-        logger.warning(f"  Frankfurt: ⚠ URL UNVERÄNDERT — Suche lief evtl. nicht ({url_after})")
+        logger.warning(f"  Frankfurt: ⚠ URL UNVERÄNDERT — Suche lief evtl. nicht")
     else:
         logger.info(f"  Frankfurt: URL nach Suche = {url_after}")
 
     if debug:
         await page.screenshot(path="debug_Frankfurt_results.png", full_page=True)
 
-    # ── Kandidaten-Links dumpen (Müll vs. echt) ──
+    # ── Kandidaten-Links dumpen ──
     try:
         anchors = await page.locator("a[href]").all()
-        logger.info(f"  Frankfurt: {len(anchors)} Link(s) auf Ergebnisseite; Kandidaten:")
+        logger.info(f"  Frankfurt: {len(anchors)} Link(s); Kandidaten:")
         shown = 0
         for a in anchors:
             try:

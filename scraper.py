@@ -962,6 +962,14 @@ async def _scrape_frankfurt(page, city, debug=False):
     today = datetime.now()
     days_back = 3 if today.weekday() == 0 else 1
     von_dt = today - timedelta(days=days_back)
+
+    # ─────────────────────────────────────────────────────────
+    # TEST-ZEILE (NUR ZUM BEWEIS, DANACH WIEDER MIT # DEAKTIVIEREN!)
+    # Erzwingt ein weites Fenster, damit garantiert Treffer kommen,
+    # damit wir sehen, ob der Extractor echte Treffer sauber ausliest.
+    von_dt = today - timedelta(days=90)
+    # ─────────────────────────────────────────────────────────
+
     von_de = von_dt.strftime("%d.%m.%Y")
     bis_de = today.strftime("%d.%m.%Y")
 
@@ -980,14 +988,11 @@ async def _scrape_frankfurt(page, city, debug=False):
         raise Exception("Frankfurt: Keyword-Feld TEXT nicht gefunden")
 
     # ── 2) Operator TEXT_O EXAKT auf 'beinhaltet (oder)' ──
-    op_set = False
     try:
         await page.select_option('select[name="TEXT_O"]', label="beinhaltet (oder)")
-        op_set = True
     except Exception:
         try:
             await page.select_option('select[name="TEXT_O"]', value="beinhaltet (oder)")
-            op_set = True
         except Exception:
             logger.warning("  Frankfurt: TEXT_O konnte nicht auf 'oder' gesetzt werden")
 
@@ -1051,7 +1056,6 @@ async def _scrape_frankfurt(page, city, debug=False):
         low = href.lower()
         if any(n in low for n in NOISE):
             continue
-        # Nur echte PARLIS-Dokumentlinks
         if "parlislink" not in low and "/parlis" not in low:
             continue
 

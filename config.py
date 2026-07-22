@@ -63,7 +63,6 @@ TODAY_ISO = datetime.now().strftime("%Y-%m-%d")    # e.g. "2026-05-06"
 # An allen anderen Tagen reicht "gestern".
 #   weekday(): Montag = 0, Dienstag = 1, ..., Sonntag = 6
 _days_back = 3 if datetime.now().weekday() == 0 else 1
-_days_back = 90   # ← 90-TAGE-TRIAGE, nach dem Test diese EINE Zeile wieder ENTFERNEN
 _start_date = datetime.now() - timedelta(days=_days_back)
 
 YESTERDAY_DE = _start_date.strftime("%d.%m.%Y")

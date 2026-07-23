@@ -550,7 +550,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
                 continue
  
-            else:  # Berlin
+           else:  # Berlin
                 await page.goto(city["url"], wait_until="domcontentloaded")
                 await page.wait_for_timeout(PAGE_SETTLE_MS)
                 await _dismiss_cookies(page)

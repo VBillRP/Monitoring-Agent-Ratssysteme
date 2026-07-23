@@ -468,23 +468,68 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
 
         try:
             if city["name"] == "Munich":
-                url = (
-                    f"https://risi.muenchen.de/risi/suche?3"
-                    f"&von={YESTERDAY_ISO}&bis={TODAY_ISO}"
-                    f"&bereich=Vorgang"
-                    f"&objekt=1&objekt=2&objekt=51&objekt=52&objekt=53"
-                )
-                await page.goto(url, wait_until="domcontentloaded")
-                await page.wait_for_timeout(PAGE_SETTLE_MS)
-                await _dismiss_cookies(page)
+    # München RIS ist eine JS-SPA. URL-Datumsparameter werden
+    # ignoriert → Datum MUSS in den sichtbaren <input type="date">
+    # gesetzt werden. Suchfeld hat placeholder "Wonach suchen Sie?".
+    await page.goto(city["url"], wait_until="networkidle")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
 
-                filled = await _try_fill(page, [
-                    'input[name*="such" i]',
-                    'input[type="search"]',
-                    '#searchInput',
-                    'input[type="text"]',
-                ], keyword)
+    # ── Keyword in die Kriterien-Box (NICHT die Header-Box) ──
+    # Es gibt ZWEI Felder mit gleichem Placeholder → .last = Kriterien-Box
+    filled = False
+    try:
+        box = page.locator('input[placeholder*="Wonach" i]').last
+        await box.wait_for(state="visible", timeout=8000)
+        await box.click()
+        await box.fill("")
+        await box.fill(keyword)
+        filled = True
+    except Exception as e:
+        logger.warning(f"       ⚠ München: Suchfeld für '{keyword}' NICHT gefunden: {e}")
 
+    # ── Fehlschlag SICHTBAR machen (nie wieder als 'Empty' tarnen) ──
+    if not filled:
+        if debug:
+            safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
+            await page.screenshot(
+                path=f"debug_Munich_{safe_kw}_NOFIELD.png", full_page=True
+            )
+        await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+        continue
+
+    # ── Datum: echte Spanne (Von = Fensterstart, Bis = heute) ──
+    # native <input type="date"> braucht ISO YYYY-MM-DD
+    date_inputs = page.locator('input[type="date"]')
+    if await date_inputs.count() >= 2:
+        await date_inputs.nth(0).fill(YESTERDAY_ISO)   # Von
+        await date_inputs.nth(0).press("Escape")
+        await date_inputs.nth(1).fill(TODAY_ISO)       # Bis
+        await date_inputs.nth(1).press("Escape")
+
+    if debug:
+        safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
+        await page.screenshot(
+            path=f"debug_Munich_{safe_kw}_pre_search.png", full_page=True
+        )
+
+    # ── Absenden: Button, sonst Enter im Feld ──
+    submitted = await _try_click(page, [
+        'button[aria-label*="uch" i]',
+        'button:has-text("Suchen")',
+        'form button[type="submit"]',
+    ])
+    if not submitted:
+        await box.press("Enter")
+
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+    results = await _extract_results(page, city["url"])
+    all_results.extend(results)
+    await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+    continue   # nächster Keyword — nicht in den Berlin-/generischen Zweig fallen
+ 
             else:  # Berlin
                 await page.goto(city["url"], wait_until="domcontentloaded")
                 await page.wait_for_timeout(PAGE_SETTLE_MS)

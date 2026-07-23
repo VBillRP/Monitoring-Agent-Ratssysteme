@@ -467,7 +467,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
         logger.info(f"       Keyword {i+1}/{len(KEYWORDS)}: {keyword}")
 
         try:
-            if city["name"] == "Munich":
+           if city["name"] == "Munich":
                 # München RIS ist eine JS-SPA. URL-Datumsparameter werden
                 # ignoriert → Datum MUSS in die sichtbaren <input type="date">
                 # gesetzt werden. Suchfeld hat placeholder "Wonach suchen Sie?".
@@ -476,7 +476,6 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 await _dismiss_cookies(page)
 
                 # ── Keyword in die Kriterien-Box (NICHT die Header-Box) ──
-                # Zwei Felder mit gleichem Placeholder → .last = Kriterien-Box
                 filled = False
                 try:
                     box = page.locator('input[placeholder*="Wonach" i]').last
@@ -488,7 +487,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 except Exception as e:
                     logger.warning(f"       ⚠ München: Suchfeld für '{keyword}' NICHT gefunden: {e}")
 
-                # ── Fehlschlag SICHTBAR machen (nie wieder als 'Empty' tarnen) ──
+                # ── Fehlschlag SICHTBAR machen ──
                 if not filled:
                     if debug:
                         safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
@@ -499,7 +498,6 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                     continue
 
                 # ── Datum: echte Spanne (Von = Fensterstart, Bis = heute) ──
-                # native <input type="date"> braucht ISO YYYY-MM-DD
                 date_inputs = page.locator('input[type="date"]')
                 if await date_inputs.count() >= 2:
                     await date_inputs.nth(0).fill(YESTERDAY_ISO)   # Von
@@ -513,9 +511,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                         path=f"debug_Munich_{safe_kw}_pre_search.png", full_page=True
                     )
 
-               # ── Absenden: bei München am zuverlässigsten via Enter ──
-                # Der Such-Button ist ein Lupen-Icon ohne Text/aria-label,
-                # daher Enter im Suchfeld als PRIMÄRER Weg.
+                # ── Absenden: primär via Enter, Fallback Lupen-Icon ──
                 searched = False
                 try:
                     await box.press("Enter")
@@ -523,7 +519,6 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 except Exception:
                     pass
 
-                # Fallback: Lupen-Icon-Button anklicken
                 if not searched:
                     searched = await _try_click(page, [
                         'form button:has(svg)',
@@ -533,7 +528,6 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                         'button[type="submit"]',
                     ])
 
-                # Warten, bis die SPA die Trefferliste nachgeladen hat
                 try:
                     await page.wait_for_load_state("networkidle")
                 except Exception:
@@ -546,13 +540,13 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                         path=f"debug_Munich_{safe_kw}_results.png", full_page=True
                     )
 
-                results = await _extract_results(page, city["url"])
+                results = await _extract_results(page, city["url"], strict=True)
                 all_results.extend(results)
-                await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
-                continue
 
-                results = await _extract_results(page, city["url"])
-                all_results.extend(results)
+                # ★★★ DAS war der eigentliche Bug: Erfolg zählen! ★★★
+                if searched:
+                    searches_ok += 1
+
                 await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
                 continue
  

@@ -475,7 +475,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 await _try_fill_date(page, [
                     'input[name*="von" i]',
                     'input[name*="from" i]',
-                ], TODAY_DE, TODAY_ISO)
+                ], YESTERDAY_DE, YESTERDAY_ISO) 
 
                 await _try_fill_date(page, [
                     'input[name*="bis" i]',
@@ -512,7 +512,7 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 await _try_fill_date(page, [
                     'input[name*="von" i]', 'input[name*="from" i]',
                     'input[name*="start" i]',
-                ], TODAY_DE, TODAY_ISO)
+                ], YESTERDAY_DE, YESTERDAY_ISO) 
 
                 await _try_fill_date(page, [
                     'input[name*="bis" i]', 'input[name*="to" i]',

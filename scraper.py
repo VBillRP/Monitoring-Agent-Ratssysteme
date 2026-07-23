@@ -471,12 +471,16 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                     'input[type="search"]',
                 ], keyword)
 
-                await _try_fill(page, [
-                    'input[name*="von" i]', 'input[name*="from" i]',
-                ], TODAY_DE)
-                await _try_fill(page, [
-                    'input[name*="bis" i]', 'input[name*="to" i]',
-                ], TODAY_DE)
+                # ── Datum: native <input type="date"> → braucht ISO YYYY-MM-DD ──
+                await _try_fill_date(page, [
+                    'input[name*="von" i]',
+                    'input[name*="from" i]',
+                ], TODAY_DE, TODAY_ISO)
+
+                await _try_fill_date(page, [
+                    'input[name*="bis" i]',
+                    'input[name*="to" i]',
+                ], TODAY_DE, TODAY_ISO)
 
                 if debug:
                     await page.screenshot(
@@ -505,14 +509,15 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                     'input[name*="volltext" i]',
                 ], keyword)
 
-                await _try_fill(page, [
+                await _try_fill_date(page, [
                     'input[name*="von" i]', 'input[name*="from" i]',
                     'input[name*="start" i]',
-                ], TODAY_DE)
-                await _try_fill(page, [
+                ], TODAY_DE, TODAY_ISO)
+
+                await _try_fill_date(page, [
                     'input[name*="bis" i]', 'input[name*="to" i]',
                     'input[name*="end" i]',
-                ], TODAY_DE)
+                ], TODAY_DE, TODAY_ISO)
 
                 if debug:
                     await page.screenshot(

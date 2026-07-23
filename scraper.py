@@ -447,110 +447,19 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
 
 
 # ═══════════════════════════════════════════════════════════
-#  SCRAPER TYPE 2: INDIVIDUAL KEYWORDS
-#  Cities: Berlin, Munich
-#  Keywords cannot be searched in bulk — each keyword
-#  requires a separate search.
+#  SCRAPER TYPE 2: INDIVIDUAL (Munich, Berlin)
+#  Keywords werden EINZELN gesucht – eine Suche pro Wort.
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
-    """
-    Berlin / Munich: each keyword must be searched separately.
-    Returns ONLY real document hits — never navigation/menu links.
-    Raises an error if no search could actually be run, so the city
-    is reported as an ERROR instead of silently returning junk.
-    """
+    """Berlin & Munich: jedes Keyword einzeln suchen."""
     all_results = []
-    searches_ok = 0  # how many keyword searches actually executed
 
     for i, keyword in enumerate(KEYWORDS):
         logger.info(f"       Keyword {i+1}/{len(KEYWORDS)}: {keyword}")
 
         try:
-           if city["name"] == "Munich":
-                # München RIS ist eine JS-SPA. URL-Datumsparameter werden
-                # ignoriert → Datum MUSS in die sichtbaren <input type="date">
-                # gesetzt werden. Suchfeld hat placeholder "Wonach suchen Sie?".
-                await page.goto(city["url"], wait_until="networkidle")
-                await page.wait_for_timeout(PAGE_SETTLE_MS)
-                await _dismiss_cookies(page)
-
-                # ── Keyword in die Kriterien-Box (NICHT die Header-Box) ──
-                filled = False
-                try:
-                    box = page.locator('input[placeholder*="Wonach" i]').last
-                    await box.wait_for(state="visible", timeout=8000)
-                    await box.click()
-                    await box.fill("")
-                    await box.fill(keyword)
-                    filled = True
-                except Exception as e:
-                    logger.warning(f"       ⚠ München: Suchfeld für '{keyword}' NICHT gefunden: {e}")
-
-                # ── Fehlschlag SICHTBAR machen ──
-                if not filled:
-                    if debug:
-                        safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
-                        await page.screenshot(
-                            path=f"debug_Munich_{safe_kw}_NOFIELD.png", full_page=True
-                        )
-                    await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
-                    continue
-
-                # ── Datum: echte Spanne (Von = Fensterstart, Bis = heute) ──
-                date_inputs = page.locator('input[type="date"]')
-                if await date_inputs.count() >= 2:
-                    await date_inputs.nth(0).fill(YESTERDAY_ISO)   # Von
-                    await date_inputs.nth(0).press("Escape")
-                    await date_inputs.nth(1).fill(TODAY_ISO)       # Bis
-                    await date_inputs.nth(1).press("Escape")
-
-                if debug:
-                    safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
-                    await page.screenshot(
-                        path=f"debug_Munich_{safe_kw}_pre_search.png", full_page=True
-                    )
-
-                # ── Absenden: primär via Enter, Fallback Lupen-Icon ──
-                searched = False
-                try:
-                    await box.press("Enter")
-                    searched = True
-                except Exception:
-                    pass
-
-                if not searched:
-                    searched = await _try_click(page, [
-                        'form button:has(svg)',
-                        'button.suchen',
-                        'button[title*="uch" i]',
-                        'input[type="submit"]',
-                        'button[type="submit"]',
-                    ])
-
-                try:
-                    await page.wait_for_load_state("networkidle")
-                except Exception:
-                    pass
-                await page.wait_for_timeout(PAGE_SETTLE_MS)
-
-                if debug:
-                    safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
-                    await page.screenshot(
-                        path=f"debug_Munich_{safe_kw}_results.png", full_page=True
-                    )
-
-                results = await _extract_results(page, city["url"], strict=True)
-                all_results.extend(results)
-
-                # ★★★ DAS war der eigentliche Bug: Erfolg zählen! ★★★
-                if searched:
-                    searches_ok += 1
-
-                await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
-                continue
- 
-           else:  # Berlin
+            if city["name"] == "Munich":
                 await page.goto(city["url"], wait_until="domcontentloaded")
                 await page.wait_for_timeout(PAGE_SETTLE_MS)
                 await _dismiss_cookies(page)
@@ -558,76 +467,86 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                 filled = await _try_fill(page, [
                     'input[name*="such" i]',
                     'input[name*="query" i]',
-                    'input[name*="volltext" i]',
-                    '#searchTerm',
-                    'input[type="search"]',
                     'input[type="text"]',
+                    'input[type="search"]',
                 ], keyword)
 
-                # Berlin also needs the date fields
+                await _try_fill(page, [
+                    'input[name*="von" i]', 'input[name*="from" i]',
+                ], TODAY_DE)
+                await _try_fill(page, [
+                    'input[name*="bis" i]', 'input[name*="to" i]',
+                ], TODAY_DE)
+
+                if debug:
+                    await page.screenshot(
+                        path=f"debug_Munich_{i}_pre_search.png",
+                        full_page=True,
+                    )
+
+                if filled:
+                    await _try_click(page, [
+                        'button[type="submit"]',
+                        'input[type="submit"]',
+                        'button:has-text("Such")',
+                        'button:has-text("Suche starten")',
+                    ])
+
+            elif city["name"] == "Berlin":
+                await page.goto(city["url"], wait_until="domcontentloaded")
+                await page.wait_for_timeout(PAGE_SETTLE_MS)
+                await _dismiss_cookies(page)
+
+                filled = await _try_fill(page, [
+                    'input[name*="such" i]',
+                    'input[name*="query" i]',
+                    'input[type="text"]',
+                    '#searchTerm',
+                    'input[name*="volltext" i]',
+                ], keyword)
+
                 await _try_fill(page, [
                     'input[name*="von" i]', 'input[name*="from" i]',
                     'input[name*="start" i]',
-              ], YESTERDAY_DE)
+                ], TODAY_DE)
                 await _try_fill(page, [
                     'input[name*="bis" i]', 'input[name*="to" i]',
                     'input[name*="end" i]',
                 ], TODAY_DE)
 
-            # No search field found → NOT a valid search. Skip this
-            # keyword (do NOT scrape navigation links as "results").
-            if not filled:
-                logger.warning(f"       No search field for '{keyword}' — skipped")
-                continue
+                if debug:
+                    await page.screenshot(
+                        path=f"debug_Berlin_{i}_pre_search.png",
+                        full_page=True,
+                    )
 
-            clicked = await _try_click(page, [
-                'input[name="go"]',
-                'input[type="submit"][value*="uch" i]',
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'button:has-text("Such")',
-            ])
-            if not clicked:
-                # Fallback: submit with Enter
-                try:
-                    await page.keyboard.press("Enter")
-                except:
-                    logger.warning(f"       Could not submit search for '{keyword}'")
-                    continue
+                if filled:
+                    await _try_click(page, [
+                        'button[type="submit"]',
+                        'input[type="submit"]',
+                        'button:has-text("Such")',
+                        'button:has-text("Suche starten")',
+                    ])
 
+            # Ergebnisse dieses Keywords einsammeln
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(PAGE_SETTLE_MS)
-
-            if debug:
-                safe = city["name"].replace(" ", "_")
-                await page.screenshot(path=f"debug_{safe}_{i+1}.png", full_page=True)
-
-            # STRICT extraction: real result links only
-            results = await _extract_results(page, city["url"], strict=True)
-            all_results.extend(results)
-            searches_ok += 1
+            keyword_results = await _extract_results(page, city["url"])
+            all_results.extend(keyword_results)
 
         except Exception as e:
-            logger.warning(f"       Keyword '{keyword}' failed: {e}")
+            logger.warning(f"       Keyword '{keyword}' fehlgeschlagen: {e}")
 
-        # Be polite — don't hammer the server
         await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
 
-    # If not a single search actually ran, report an ERROR instead
-    # of pretending the city was searched successfully.
-    if searches_ok == 0:
-        raise Exception(
-            "Could not run any keyword search (search field/button not found). "
-            "Check the search URL and selectors for this city."
-        )
-
-    # Remove duplicate results (same URL found by different keywords)
+    # Duplikate anhand der URL entfernen
     seen = set()
     unique = []
     for r in all_results:
         if r["url"] not in seen:
             seen.add(r["url"])
             unique.append(r)
+
     return unique
 
 

@@ -513,17 +513,43 @@ async def _scrape_individual(page: Page, city: dict, debug: bool) -> list:
                         path=f"debug_Munich_{safe_kw}_pre_search.png", full_page=True
                     )
 
-                # ── Absenden: Button, sonst Enter im Feld ──
-                submitted = await _try_click(page, [
-                    'button[aria-label*="uch" i]',
-                    'button:has-text("Suchen")',
-                    'form button[type="submit"]',
-                ])
-                if not submitted:
+               # ── Absenden: bei München am zuverlässigsten via Enter ──
+                # Der Such-Button ist ein Lupen-Icon ohne Text/aria-label,
+                # daher Enter im Suchfeld als PRIMÄRER Weg.
+                searched = False
+                try:
                     await box.press("Enter")
+                    searched = True
+                except Exception:
+                    pass
 
-                await page.wait_for_load_state("networkidle")
+                # Fallback: Lupen-Icon-Button anklicken
+                if not searched:
+                    searched = await _try_click(page, [
+                        'form button:has(svg)',
+                        'button.suchen',
+                        'button[title*="uch" i]',
+                        'input[type="submit"]',
+                        'button[type="submit"]',
+                    ])
+
+                # Warten, bis die SPA die Trefferliste nachgeladen hat
+                try:
+                    await page.wait_for_load_state("networkidle")
+                except Exception:
+                    pass
                 await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+                if debug:
+                    safe_kw = "".join(c for c in keyword if c.isalnum())[:20]
+                    await page.screenshot(
+                        path=f"debug_Munich_{safe_kw}_results.png", full_page=True
+                    )
+
+                results = await _extract_results(page, city["url"])
+                all_results.extend(results)
+                await asyncio.sleep(DELAY_BETWEEN_KEYWORDS)
+                continue
 
                 results = await _extract_results(page, city["url"])
                 all_results.extend(results)

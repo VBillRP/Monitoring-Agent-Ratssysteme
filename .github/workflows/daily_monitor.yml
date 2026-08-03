@@ -47,13 +47,26 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Leipzig-Reachability-Check
+      - name: Leipzig OParl reachability check
         run: |
-          echo "HTTP-Status von Leipzig:"
-          curl -s -o /dev/null -w "%{http_code}  (time_total=%{time_total}s)\n" \
-            --max-time 30 \
-            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            https://ratsinformation.leipzig.de/allris_leipzig_public/vo040 || echo "curl fehlgeschlagen / Timeout"
+          echo "── 1) Web-UI (bekannt geblockt, zur Kontrolle) ──"
+          curl -s -o /dev/null -w "  UI:     status=%{http_code}  time=%{time_total}s\n" \
+            --max-time 30 -A "Mozilla/5.0" \
+            "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040" \
+            || echo "  UI:     Timeout / geblockt"
+
+          echo "── 2) OParl system-Endpunkt ──"
+          curl -s -o /dev/null -w "  OParl:  status=%{http_code}  time=%{time_total}s\n" \
+            --max-time 30 -A "Mozilla/5.0" \
+            "https://ratsinformation.leipzig.de/allris_leipzig_public/oparl/system" \
+            || echo "  OParl:  Timeout / geblockt"
+
+          echo "── 3) OParl Paper-Liste (Vorlagen) — erste 300 Zeichen ──"
+          curl -s --max-time 30 -A "Mozilla/5.0" \
+            "https://ratsinformation.leipzig.de/allris_leipzig_public/oparl/bodies/0001/papers" \
+            | head -c 300 \
+            || echo "  OParl-Paper:  Timeout / geblockt"
+          echo ""
 
       # Step 5: Run the monitor script
       # The secrets are injected as environment variables

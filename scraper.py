@@ -345,13 +345,13 @@ async def _scrape_standard(page: Page, city: dict, debug: bool) -> list:
     6. Click Search
     7. Collect results
     """
-await page.goto(
+    await page.goto(
         city["url"],
         wait_until="domcontentloaded",              # wartet nicht auf alle Ressourcen
         timeout=city.get("timeout_ms", PAGE_TIMEOUT_MS),  # Leipzig: 60 s, sonst 30 s
     )
-await page.wait_for_timeout(PAGE_SETTLE_MS)
-await _dismiss_cookies(page)
+    await page.wait_for_timeout(PAGE_SETTLE_MS)
+    await _dismiss_cookies(page)
 
     # All keywords as a single space-separated string
     keywords_str = " ".join(KEYWORDS)

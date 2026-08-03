@@ -350,8 +350,8 @@ await page.goto(
         wait_until="domcontentloaded",              # wartet nicht auf alle Ressourcen
         timeout=city.get("timeout_ms", PAGE_TIMEOUT_MS),  # Leipzig: 60 s, sonst 30 s
     )
-    await page.wait_for_timeout(PAGE_SETTLE_MS)
-    await _dismiss_cookies(page)
+await page.wait_for_timeout(PAGE_SETTLE_MS)
+await _dismiss_cookies(page)
 
     # All keywords as a single space-separated string
     keywords_str = " ".join(KEYWORDS)

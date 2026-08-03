@@ -47,6 +47,14 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
+      - name: Leipzig-Reachability-Check
+        run: |
+          echo "HTTP-Status von Leipzig:"
+          curl -s -o /dev/null -w "%{http_code}  (time_total=%{time_total}s)\n" \
+            --max-time 30 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            https://ratsinformation.leipzig.de/allris_leipzig_public/vo040 || echo "curl fehlgeschlagen / Timeout"
+
       # Step 5: Run the monitor script
       # The secrets are injected as environment variables
       - name: Run Council Monitor

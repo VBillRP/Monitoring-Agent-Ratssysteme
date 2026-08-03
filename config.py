@@ -149,12 +149,11 @@ CITIES = [
     # NOTE: Leipzig runs AllRIS (not SessionNet) and uses a different form
     # layout — the "standard" handler does not fit it. It also blocks
     # datacenter/CI IPs. Needs a dedicated AllRIS handler; left as-is for now.
-    {
-        "name": "Leipzig",
-        "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
-        "type": "standard",
-        "timeout_ms": 60000,   # ← Leipzig lädt zäh: 60 s statt Standard-30 s
-    },
+    # {
+    #     "name": "Leipzig",
+    #     "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
+    #     "type": "leipzig",
+    # },
     {
         "name": "Mainz",
         "url": "https://bi.mainz.de/suchen01.php?smcrecherche=7020",

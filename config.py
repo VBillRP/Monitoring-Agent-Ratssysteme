@@ -76,13 +76,44 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
 
+# Results card — the channel the whole team reads. Never receives diagnostics.
 TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
 
+# Diagnostics card — a private dev channel. Optional: when unset, the
+# diagnostics are written to the run log instead.
+TEAMS_DEV_WEBHOOK_URL = os.environ.get("TEAMS_DEV_WEBHOOK_URL", "")
+
 # ─────────────────────────────────────────────────────────
-# AI MODEL for filtering results
-# "gpt-4o-mini" is fast & cheap (~$0.15 per 1M input tokens)
-# Change to "gpt-4o" for better accuracy (10x more expensive)
+# AI FILTER
+# Off by default: the team chose to review unfiltered results until
+# the filter has been validated side by side. Set ENABLE_AI_FILTER=true
+# (and the AZURE_OPENAI_* variables) to switch it on.
 # ─────────────────────────────────────────────────────────
+ENABLE_AI_FILTER = os.environ.get("ENABLE_AI_FILTER", "false").strip().lower() in ("1", "true", "yes")
+
+# ─────────────────────────────────────────────────────────
+# RUN HEALTH
+# The workflow is marked failed when more than this many cities fail
+# or cannot be verified, NOT counting the cities listed in KNOWN_ISSUES.
+# ─────────────────────────────────────────────────────────
+MAX_UNEXPECTED_FAILURES = 2
+
+# Cities that are expected to fail for reasons outside the code.
+# They are still attempted every run (so we notice when they recover),
+# but they do not count towards the failure threshold above.
+KNOWN_ISSUES = {
+    "Ludwigshafen": "Myra WAF blocks by IP/region: 503 from GitHub's US runners and from "
+                    "a UK home connection, but the site loads normally from the Berlin "
+                    "office (checked 23 September 2026). Works once the run moves to the "
+                    "office runner (RUNNER_LABEL, see README).",
+    "Leipzig": "Refuses connections from datacentre IPs (GitHub's runners) but answers "
+               "from a home/office connection in under a second (checked 23 September "
+               "2026). Works once the run moves to the office runner.",
+    "Cologne": "TCP connection times out from GitHub AND from a home IP "
+               "(checked 23 September 2026) — the public server is unreachable; the "
+               "other host the city links to (cport-ratsinfo) is a login-only portal. "
+               "Re-check weekly; ask the city's IT.",
+}
 
 
 # ─────────────────────────────────────────────────────────
@@ -120,6 +151,20 @@ TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
 #
 #   "frankfurt"   → Uses the PARLIS system (different platform).
 #                   (Frankfurt)
+#
+#   "berlin"      → PARDOK portal, one keyword at a time with
+#                   full-text search and a date range. (Berlin)
+#
+#   "leipzig"     → AllRIS list that is already sorted newest-first;
+#                   read rows inside the date window, no form. (Leipzig)
+#
+#   "ludwigshafen"→ Standard SessionNet behind a Myra WAF: disguise the
+#                   browser, check we got through, then run "standard".
+#
+# Optional per-city keys:
+#   timeout_ms        — page-load timeout for slow sites (default 30 000)
+#   result_selectors  — CSS selectors for THIS site's result links, when
+#                       the generic extractor finds nothing (see Munich)
 # ─────────────────────────────────────────────────────────
 
 CITIES = [
@@ -146,14 +191,14 @@ CITIES = [
         "url": "https://online-service2.nuernberg.de/buergerinfo/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
-    # NOTE: Leipzig runs AllRIS (not SessionNet) and uses a different form
-    # layout — the "standard" handler does not fit it. It also blocks
-    # datacenter/CI IPs. Needs a dedicated AllRIS handler; left as-is for now.
-    # {
-    #     "name": "Leipzig",
-    #     "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
-    #     "type": "leipzig",
-    # },
+    # Leipzig blocks datacentre IPs (see KNOWN_ISSUES) — it fails on GitHub's
+    # hosted runner and works from the office runner. Its handler returned
+    # 23 results from a home connection on 23 September 2026.
+    {
+        "name": "Leipzig",
+        "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
+        "type": "leipzig",
+    },
     {
         "name": "Mainz",
         "url": "https://bi.mainz.de/suchen01.php?smcrecherche=7020",
@@ -169,9 +214,7 @@ CITIES = [
         "url": "https://ris-moenchengladbach.itk-rheinland.de/sessionnetmglbi/suchen01.asp",
         "type": "standard",
     },
-    # NOTE: Ludwigshafen sits behind a Myra WAF that returns a 503
-    # "blocked" page to datacenter/CI traffic. May work from a residential
-    # IP; expect it to fail in GitHub Actions regardless of selectors.
+    # Ludwigshafen sits behind a Myra WAF — see KNOWN_ISSUES above.
     {
         "name": "Ludwigshafen",
         "url": "https://www.ludwigshafen.de/ratsinformationssystem/bi/suchen01.php?smcrecherche=7020",
@@ -182,10 +225,13 @@ CITIES = [
         "url": "https://gemeinderat.heidelberg.de/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
+    # Cologne currently does not accept connections at all — see KNOWN_ISSUES.
+    # The longer timeout is for the days it is merely slow.
     {
         "name": "Cologne",
         "url": "https://ratsinformation.stadt-koeln.de/suchen01.asp",
         "type": "standard",
+        "timeout_ms": 60000,
     },
 
     # ═══════════════════════════════════════════════
@@ -201,10 +247,18 @@ CITIES = [
         "url": "https://pardok.parlament-berlin.de/portala/browse.tt.html",
       "type": "berlin",
     },
+    # Munich (RiSI, a Wicket app): the generic extractor finds nothing on
+    # its results page, so the real hits are named explicitly. Document
+    # previews (?dokument=) and in-page anchors (#…) are excluded.
     {
         "name": "Munich",
         "url": "https://risi.muenchen.de/risi/suche",
         "type": "individual",
+        "result_selectors": [
+            'a[href*="/sitzungsvorlage/detail/"]:not([href*="?dokument="]):not([href*="#"])',
+            'a[href*="/vorgang/detail/"]:not([href*="?dokument="]):not([href*="#"])',
+            'a[href*="/antrag/detail/"]:not([href*="?dokument="]):not([href*="#"])',
+        ],
     },
     {
         "name": "Düsseldorf",

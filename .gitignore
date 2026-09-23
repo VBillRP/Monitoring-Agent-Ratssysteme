@@ -1,0 +1,20 @@
+# Secrets — never commit these
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# Run output (screenshots, page snapshots, per-run logs)
+debug/
+debug_*.png
+run-summary.md
+run-results.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

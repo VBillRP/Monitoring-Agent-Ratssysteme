@@ -18,12 +18,24 @@ on:
     - cron: '0 7 * * 1-5'
 
   # ── Manual trigger ──
-  # Allows you to click "Run workflow" on GitHub at any time
+  # Allows you to click "Run workflow" on GitHub at any time.
+  # Untick "send_teams" to test a change WITHOUT posting to the team
+  # channel — the run page still shows the full summary and artifacts.
   workflow_dispatch:
+    inputs:
+      send_teams:
+        description: "Post the results card to Teams"
+        type: boolean
+        default: true
 
 jobs:
   monitor:
-    runs-on: ubuntu-latest
+    # Where the run executes. Default: GitHub's hosted runner (US datacentre
+    # IP). Ludwigshafen and Leipzig block that; both work from the Berlin
+    # office. To run there instead, install a self-hosted runner on an
+    # office PC (see README → "Running from the office") and set the
+    # repository VARIABLE  RUNNER_LABEL = self-hosted.  Unset it to go back.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 45   # Safety: cancel if it takes too long
 
     steps:
@@ -41,14 +53,21 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      # Step 4: Install the Chrome browser for Playwright
+      # Step 4: Install the Chrome browser for Playwright.
+      # The system libraries (install-deps) are only needed — and only
+      # installable without a password — on GitHub's hosted Linux runner.
       - name: Install Playwright browser
-        run: |
-          playwright install chromium
-          playwright install-deps chromium
+        run: playwright install chromium
+
+      - name: Install browser system libraries (hosted runner only)
+        if: ${{ !vars.RUNNER_LABEL }}
+        run: playwright install-deps chromium
 
       # Step 5: Run the monitor script
-      # The secrets are injected as environment variables
+      # The secrets are injected as environment variables.
+      #   TEAMS_WEBHOOK_URL      → results card, team channel
+      #   TEAMS_DEV_WEBHOOK_URL  → diagnostics card, private dev channel (optional)
+      #   ENABLE_AI_FILTER       → repository VARIABLE (Settings → Variables), "true" to switch on
       - name: Run Council Monitor
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
@@ -56,14 +75,20 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: python main.py --no-llm 
+          TEAMS_DEV_WEBHOOK_URL: ${{ secrets.TEAMS_DEV_WEBHOOK_URL }}
+          ENABLE_AI_FILTER: ${{ vars.ENABLE_AI_FILTER || 'false' }}
+        run: python main.py ${{ github.event.inputs.send_teams == 'false' && '--no-teams' || '' }}
 
-      # Step 6: Save debug screenshots if they were created
-      - name: Upload debug screenshots
+      # Step 6: Keep the evidence — summary table, full JSON, and a
+      # screenshot + HTML snapshot of every city that failed.
+      - name: Upload run summary and failure evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots-${{ github.run_number }}
-          path: debug_*.png
+          name: run-${{ github.run_number }}
+          path: |
+            run-summary.md
+            run-results.json
+            debug/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30

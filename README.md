@@ -92,10 +92,48 @@ If a city moved to a different URL, update it in `config.py`.
 
 Listed in `KNOWN_ISSUES` in `config.py` with the reason. They are still
 attempted every run (so we notice when they recover) but do not turn the
-run red. Currently Ludwigshafen (Myra WAF blocks GitHub's IPs) and
-Cologne (server does not accept connections at all — checked from a home
-IP on 23 September 2026 as well). Leipzig is disabled in `CITIES`; its
-handler exists.
+run red. As of 23 September 2026:
+
+- **Ludwigshafen** — blocked by IP/region (503 from GitHub's US runners and
+  from a UK connection, in every browser mode; loads normally from the
+  Berlin office). Fixed by running from the office, below.
+- **Leipzig** — refuses datacentre IPs; answers instantly from an office or
+  home connection. Fixed by running from the office, below.
+- **Cologne** — the public server accepts no connections from anywhere;
+  the other host the city links to is a login-only portal. Re-check
+  weekly and ask the city's IT.
+
+## Running from the office (self-hosted runner)
+
+GitHub's hosted runners live in US datacentres, and two cities reject
+that. A **self-hosted runner** is GitHub's agent installed on a machine of
+ours — any always-on PC in the Berlin office. GitHub still schedules the
+09:00 run, keeps the logs and artifacts, and posts to Teams; only the
+place where the browser runs changes.
+
+**Step 0 — make the repository private first.** GitHub advises against
+self-hosted runners on public repositories: anyone could fork the repo and
+open a pull request whose workflow runs on the office machine. (The
+keywords and city list are also better not public.) *Settings → General →
+Danger Zone → Change visibility → Private.* Only the repository owner can
+do this.
+
+1. On the office PC: install Python 3.12, then `pip install -r
+   requirements.txt` and `playwright install chromium`. Keep the machine
+   on and awake (disable sleep); a scheduled run on a sleeping machine
+   simply waits until it wakes.
+2. In GitHub: *Settings → Actions → Runners → New self-hosted runner*.
+   Pick the PC's operating system and run the three commands it shows
+   (download, configure, run). Configure it **as a service** so it starts
+   with the machine (the configure step offers this).
+3. In GitHub: *Settings → Secrets and variables → Actions → Variables →
+   New repository variable*: name `RUNNER_LABEL`, value `self-hosted`.
+   The next run executes on the office PC. Delete the variable to go back
+   to GitHub's hosted runner at any time.
+4. Run the workflow manually once with *send_teams* unticked and check the
+   run page: Ludwigshafen and Leipzig should now be ✅ or ⬜ instead of ❌.
+
+Only the daily monitor moves; CI (`ci.yml`) stays on GitHub's runners.
 
 ## Configuration
 

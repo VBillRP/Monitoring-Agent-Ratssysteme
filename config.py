@@ -102,13 +102,17 @@ MAX_UNEXPECTED_FAILURES = 2
 # They are still attempted every run (so we notice when they recover),
 # but they do not count towards the failure threshold above.
 KNOWN_ISSUES = {
-    "Ludwigshafen": "Myra WAF blocks our headless browser — from GitHub AND from a "
-                    "home IP (checked 23 September 2026), so it is not an IP block. "
-                    "Options: ask the city for a feed, or run a real (non-headless) "
-                    "browser on a machine of our own.",
+    "Ludwigshafen": "Myra WAF blocks by IP/region: 503 from GitHub's US runners and from "
+                    "a UK home connection, but the site loads normally from the Berlin "
+                    "office (checked 23 September 2026). Works once the run moves to the "
+                    "office runner (RUNNER_LABEL, see README).",
+    "Leipzig": "Refuses connections from datacentre IPs (GitHub's runners) but answers "
+               "from a home/office connection in under a second (checked 23 September "
+               "2026). Works once the run moves to the office runner.",
     "Cologne": "TCP connection times out from GitHub AND from a home IP "
-               "(checked 23 September 2026) — server unreachable, not an IP block. "
-               "Re-check periodically.",
+               "(checked 23 September 2026) — the public server is unreachable; the "
+               "other host the city links to (cport-ratsinfo) is a login-only portal. "
+               "Re-check weekly; ask the city's IT.",
 }
 
 
@@ -187,14 +191,14 @@ CITIES = [
         "url": "https://online-service2.nuernberg.de/buergerinfo/suchen01.asp?smcrecherche=7020",
         "type": "standard",
     },
-    # Leipzig is DISABLED: the site does not answer connections from
-    # GitHub Actions (connection timeout). A dedicated handler exists
-    # (scraper.py: _scrape_leipzig) — uncomment this entry to try it again.
-    # {
-    #     "name": "Leipzig",
-    #     "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
-    #     "type": "leipzig",
-    # },
+    # Leipzig blocks datacentre IPs (see KNOWN_ISSUES) — it fails on GitHub's
+    # hosted runner and works from the office runner. Its handler returned
+    # 23 results from a home connection on 23 September 2026.
+    {
+        "name": "Leipzig",
+        "url": "https://ratsinformation.leipzig.de/allris_leipzig_public/vo040",
+        "type": "leipzig",
+    },
     {
         "name": "Mainz",
         "url": "https://bi.mainz.de/suchen01.php?smcrecherche=7020",

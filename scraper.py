@@ -1427,14 +1427,15 @@ async def _scrape_ludwigshafen(page: Page, city: dict, debug: bool) -> list:
     # 4) EHRLICHE Pruefung: sind wir durch oder gesperrt?
     content = (await _safe_content(page)).lower()
     if "you are not supposed to be here" in content:
-        # Checked 23 September 2026: the block happens from a home IP as
-        # well, so it is not (only) GitHub's datacentre address — the WAF
-        # rejects this headless browser itself. Stealth tweaks are not enough.
+        # Checked 23 September 2026: blocked from GitHub's US runners AND from
+        # a UK home connection — in every browser mode, even a real headed
+        # Chrome — but the site loads normally from the Berlin office. So the
+        # WAF filters by IP/region, not by browser. Only the runner's location fixes it.
         raise ScrapeError(
-            "Myra-WAF blockiert trotz Tarnung — auch von einer Wohn-IP aus "
-            "(geprueft 23.09.2026). Der WAF erkennt den Headless-Browser selbst. "
-            "Loesung: Datenfeed bei der Stadt anfragen oder einen echten Browser "
-            "(nicht headless) auf einem eigenen Rechner einsetzen.",
+            "Myra-WAF blockiert diese IP/Region (503) — GitHub-Runner (USA) und "
+            "UK-Anschluss werden abgewiesen, aus dem Berliner Buero laedt die Seite "
+            "normal (geprueft 23.09.2026). Kein Browser-Problem: Loesung ist der "
+            "Self-Hosted-Runner im Buero (README: 'Running from the office').",
             BLOCKED,
         )
 

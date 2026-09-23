@@ -37,6 +37,7 @@ DELAY_BETWEEN_CITIES = 3       # Seconds to wait between cities
 DELAY_BETWEEN_KEYWORDS = 1.5   # Seconds between individual keyword searches
 PAGE_SETTLE_MS = 2000          # Milliseconds to let a page finish loading
 PAGE_TIMEOUT_MS = 30000        # Max milliseconds before giving up on a page
+SUBMIT_VERIFY_S = 10           # Seconds to wait for the page to react to Search
 
 # Where screenshots + page snapshots of failed cities are written.
 # The workflow uploads this folder as an artifact after every run.
@@ -338,12 +339,22 @@ async def _submit_search(page: Page, city_name: str, selectors: list,
         pass
     await page.wait_for_timeout(PAGE_SETTLE_MS)
 
-    after = await _safe_body_text(page)
-    if after.strip() == before.strip():
-        raise UnverifiedSearch(
-            f"{city_name}: page did not change after clicking Search — "
-            "the search probably never ran"
-        )
+    # Some sites (Stuttgart's AllRIS, Wicket) render the result list a few
+    # seconds after the click. Poll for the change instead of judging after
+    # a single fixed pause — fast sites are detected on the first check.
+    deadline = time.monotonic() + SUBMIT_VERIFY_S
+    while True:
+        after = await _safe_body_text(page)
+        if after.strip() != before.strip():
+            return
+        if time.monotonic() >= deadline:
+            break
+        await page.wait_for_timeout(1000)
+
+    raise UnverifiedSearch(
+        f"{city_name}: page did not change within {SUBMIT_VERIFY_S}s of clicking "
+        "Search — the search probably never ran"
+    )
 
 
 async def _extract_results(page: Page, base_url: str, strict: bool = False,
@@ -981,70 +992,78 @@ async def _scrape_hannover(page: Page, city: dict, debug: bool) -> list:
 # ═══════════════════════════════════════════════════════════
 
 async def _scrape_stuttgart(page: Page, city: dict, debug: bool) -> list:
-    """Stuttgart AllRIS: click tabs first, then fill fields."""
+    """
+    Stuttgart AllRIS (tr010, a Wicket app). What the page really looks like
+    (from the saved evidence, 23 September 2026):
+
+      • a HEADER quick-search with its own "Suchen" button — the first
+        button[type=submit] on the page. The old handler clicked THAT, so
+        it submitted an empty header search and reported "Empty" every day.
+      • the real criteria form: keyword box #trsimple ("eines dieser Wörter
+        enthalten"), a collapsed "Aktueller Zeitraum" panel whose "+" toggle
+        (a.js-simple-tooltip) reveals #beginDateField / "Bis:" date inputs,
+        and the "Anzeigen" button #searchButton.
+      • the date panel re-renders via AJAX, so: open it, set the dates,
+        THEN type the keywords, then click Anzeigen. Results take a few
+        seconds to render (handled by _submit_search's polling).
+    """
     await page.goto(city["url"], wait_until="domcontentloaded")
     await page.wait_for_timeout(PAGE_SETTLE_MS)
     await _dismiss_cookies(page)
 
-    # Step 1: Click "Vorgänge suchen, die…" tab/link
-    clicked = await _try_click(page, [
-        'a:has-text("Vorgänge suchen")',
-        'button:has-text("Vorgänge suchen")',
-        'li:has-text("Vorgänge suchen") a',
-        'span:has-text("Vorgänge suchen")',
-    ])
-    if not clicked:
-        try:
-            await page.get_by_text("Vorgänge suchen, die").click()
-        except Exception:
-            logger.warning("  Could not click 'Vorgänge suchen' for Stuttgart")
-    await page.wait_for_timeout(1000)
+    # Step 1: open the "Aktueller Zeitraum" panel if its date inputs are hidden
+    date_von = ['#beginDateField', 'input[placeholder="Von:"]', 'input[aria-label*="Beginn" i]']
+    date_bis = ['input[placeholder="Bis:"]', 'input[aria-label*="Ende" i]']
+    try:
+        dates_visible = await page.locator(date_von[0]).first.is_visible(timeout=1000)
+    except Exception:
+        dates_visible = False
+    if not dates_visible:
+        opened = await _try_click(page, [
+            'div:has(> div > h2:has-text("Aktueller Zeitraum")) a.js-simple-tooltip',
+            'div:has(> div > h2:has-text("Zeitraum")) a',
+            'a:has-text("Zeitraum")',
+        ])
+        if opened:
+            try:
+                await page.wait_for_selector('input[type="date"]', state="visible", timeout=8000)
+            except Exception:
+                logger.warning("  Stuttgart: Zeitraum panel did not open — searching without a date window")
+        else:
+            logger.warning("  Stuttgart: Zeitraum toggle not found — searching without a date window")
 
-    # Step 2: Keywords in "eines dieser wörter enthalten"
+    # Step 2: dates (native <input type=date> → ISO), each followed by a
+    # short pause for the AJAX re-render
+    await _try_fill_date(page, date_von, YESTERDAY_DE, YESTERDAY_ISO)
+    await page.wait_for_timeout(600)
+    await _try_fill_date(page, date_bis, TODAY_DE, TODAY_ISO)
+    await page.wait_for_timeout(600)
+
+    # Step 3: keywords LAST (an earlier fill is wiped by the panel re-render)
     keywords_str = " ".join(KEYWORDS)
-
     filled = await _try_fill(page, [
+        '#trsimple',
+        'input[name$="trsimple"]',
         'input[name*="oder" i]',
         'input[name*="worte" i]',
-        'textarea[name*="oder" i]',
-        'input[name*="eines" i]',
     ], keywords_str)
-
     if not filled:
         try:
-            field = page.get_by_label("eines dieser", exact=False).first
-            await field.fill(keywords_str)
+            await page.get_by_label("eines dieser", exact=False).first.fill(keywords_str)
             filled = True
         except Exception:
             raise ScrapeError("Could not find keyword field for Stuttgart", FIELD_NOT_FOUND)
 
-    # Step 3: Click "Zeitraum" to reveal date fields
-    await _try_click(page, [
-        'a:has-text("Zeitraum")',
-        'button:has-text("Zeitraum")',
-        'li:has-text("Zeitraum") a',
-        'span:has-text("Zeitraum")',
-    ])
-    await page.wait_for_timeout(1000)
-
-    # Step 4: Set dates
-    await _try_fill_date(page, [
-        'input[name*="von" i]', 'input[name*="start" i]',
-    ], YESTERDAY_DE, YESTERDAY_ISO)
-    await _try_fill_date(page, [
-        'input[name*="bis" i]', 'input[name*="end" i]',
-    ], TODAY_DE, TODAY_ISO)
-
     if debug:
         await page.screenshot(path=f"{DEBUG_DIR}/Stuttgart_pre_search.png", full_page=True)
 
-    # Step 5: Search — and confirm the page responded
+    # Step 4: "Anzeigen" — the criteria form's button, never the header "Suchen"
     await _submit_search(page, "Stuttgart", [
-        'input[type="submit"]',
-        'button[type="submit"]',
-        'button:has-text("Such")',
-        'input[value*="uch" i]',
-    ], enter_fallback=True)
+        '#searchButton',
+        'button[name="searchPanel:search"]',
+        'button:has-text("Anzeigen")',
+        'form:has(#trsimple) button[type="submit"]',
+    ], enter_fallback=True, enter_target='#trsimple')
 
     return await _extract_results(page, city["url"])
 

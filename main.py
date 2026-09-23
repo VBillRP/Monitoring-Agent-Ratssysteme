@@ -9,10 +9,13 @@
 
  Usage:
    python main.py                   Run normally (all cities)
-   python main.py --debug           Save screenshots for debugging
+   python main.py --debug           Also save screenshots of every step
    python main.py --city Cologne    Run for one city only
-   python main.py --no-llm          Skip AI filtering
-   python main.py --no-teams        Skip Teams (print to console)
+   python main.py --no-llm          Skip AI filtering (also off unless ENABLE_AI_FILTER=true)
+   python main.py --no-teams        Skip Teams (print to console) — use this when testing
+
+ Every run writes run-summary.md and run-results.json, and saves a
+ screenshot + HTML snapshot of each failed city under debug/.
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -25,10 +28,12 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-from config import CITIES, KEYWORDS, TODAY_DE
+from config import CITIES, KEYWORDS, TODAY_DE, ENABLE_AI_FILTER
 from scraper import run_all_scrapers
 from llm_filter import filter_results
-from teams_notify import send_to_teams
+from teams_notify import send_to_teams, send_diagnostics
+from report import summarise, unexpected_failures, run_failed, write_artifacts
+from outcomes import OK, EMPTY, UNVERIFIED, ERROR
 
 # ─── Set up logging ──────────────────────────────────────
 logging.basicConfig(
@@ -94,49 +99,67 @@ async def main():
 
     # ═══════════════════════════════════════════════════════
     # STEP 2: FILTER results with AI
+    # Off unless ENABLE_AI_FILTER=true (config.py) — the team is
+    # reviewing unfiltered results until the filter is validated.
     # ═══════════════════════════════════════════════════════
     has_any_results = any(r["results"] for r in results)
 
-    if not args.no_llm and has_any_results:
+    if ENABLE_AI_FILTER and not args.no_llm and has_any_results:
         logger.info("")
         logger.info("━" * 55)
         logger.info("STEP 2 │ Filtering with AI...")
         logger.info("━" * 55)
         results = await filter_results(results)
+    elif args.no_llm:
+        logger.info("\n⏭️  Skipping AI filter (--no-llm flag)")
+    elif not ENABLE_AI_FILTER:
+        logger.info("\n⏭️  Skipping AI filter (ENABLE_AI_FILTER is not set)")
     else:
-        if args.no_llm:
-            logger.info("\n⏭️  Skipping AI filter (--no-llm flag)")
-        else:
-            logger.info("\n⏭️  Skipping AI filter (no results to filter)")
+        logger.info("\n⏭️  Skipping AI filter (no results to filter)")
 
     # ═══════════════════════════════════════════════════════
-    # STEP 3: SEND to Microsoft Teams
+    # STEP 3: REPORT — summary for the run page + saved artifacts
+    # ═══════════════════════════════════════════════════════
+    write_artifacts(results, TODAY_DE)
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 4: SEND to Microsoft Teams
+    #   • results card   → the channel the whole team reads
+    #   • diagnostics    → the private dev channel (or the log)
     # ═══════════════════════════════════════════════════════
     if not args.no_teams:
         logger.info("")
         logger.info("━" * 55)
-        logger.info("STEP 3 │ Sending to Microsoft Teams...")
+        logger.info("STEP 4 │ Sending to Microsoft Teams...")
         logger.info("━" * 55)
         await send_to_teams(results)
+        await send_diagnostics(results)
     else:
         logger.info("\n⏭️  Skipping Teams (--no-teams flag)")
         # Still print to console
         from teams_notify import _print_results_to_console
         _print_results_to_console(results)
+        await send_diagnostics(results, force_console=True)
 
     # ═══════════════════════════════════════════════════════
     # SUMMARY
     # ═══════════════════════════════════════════════════════
+    c = summarise(results)
+    unexpected = unexpected_failures(results)
     logger.info("")
     logger.info("═" * 55)
-    total_results = sum(len(r["results"]) for r in results)
-    total_errors = sum(1 for r in results if r.get("error"))
-    total_empty = sum(1 for r in results if not r["results"] and not r.get("error"))
-    logger.info(f"✅ DONE │ {total_results} results │ {total_empty} empty │ {total_errors} errors")
+    logger.info(
+        f"✅ DONE │ {c['links']} results │ {c[OK]} ok │ {c[EMPTY]} empty │ "
+        f"{c[UNVERIFIED]} unverified │ {c[ERROR]} errors"
+    )
+    if unexpected:
+        logger.info(f"   Unexpected failures: {', '.join(r['city'] for r in unexpected)}")
     logger.info("═" * 55)
 
-    # Return non-zero exit code if all cities failed
-    if total_errors == len(cities):
+    # Mark the run failed when too many cities failed for reasons we did
+    # not already know about (see MAX_UNEXPECTED_FAILURES / KNOWN_ISSUES).
+    if run_failed(results):
+        logger.error("Run marked FAILED: too many unexpected failures — see run-summary.md")
         sys.exit(1)
 
 
